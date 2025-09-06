@@ -37,8 +37,8 @@
     </div>
     <div class="row">
       <label>Coil 1</label>
-      <input id="c1" type="range" min="25" max="60" step="0.1" value="35">
-      <span id="t1" class="chip">35.0°C</span>
+      <input id="c1" type="range" min="25" max="60" step="0.1" value="25">
+      <span id="t1" class="chip">25.0°C</span>
     </div>
     <div class="row">
       <label>Coil 2</label>
@@ -114,11 +114,11 @@
             const n=(o.name||'').toLowerCase();
             if(keys.some(k=>n.includes(k))){
               console.log('COIL FOUND:', o.name, `(${o.material?.type})`);
-              const mat = makeRadialStandardMaterial(o.material);
-              o.material = mat.material;
+              const { material, uniforms } = makeRadialStandardMaterial(o.material);
+              o.material = material;                   // วัสดุใหม่สำหรับ mesh นี้เท่านั้น
               o.material.needsUpdate = true;
               coilMeshes.push(o);
-              coilUniforms.push(mat.uniforms);
+              coilUniforms.push(uniforms);             // เก็บ reference ของ uniforms ชุดนี้ (ไม่แชร์กับชิ้นอื่น)
             }
           }
         });
@@ -129,10 +129,12 @@
       }, undefined, err=>console.error('Load GLB error:', err));
     }
 
-    // สร้าง ShaderMaterial ที่คงแสง/เงา + ซ้อน heat ทับ texture เดิม
+    // วัสดุใหม่: คงแสง/เงา + ซ้อน heat ทับ texture เดิม; uniforms ใหม่ต่อ mesh
     function makeRadialStandardMaterial(baseMat){
       const usePhysical = baseMat && /Physical/i.test(baseMat.type||'');
       const core = THREE.ShaderLib[ usePhysical ? 'physical' : 'standard' ];
+
+      // <<< สำคัญ: clone ชุดใหม่ เพื่อไม่ให้แชร์กัน >>>
       const uniforms = THREE.UniformsUtils.clone(core.uniforms);
 
       if ('roughness' in baseMat) uniforms.roughness.value = baseMat.roughness;
@@ -144,6 +146,7 @@
       const defines = usePhysical ? { PHYSICAL: '' } : { STANDARD: '' };
       if (baseMat.map) { uniforms.map.value = baseMat.map; defines.USE_MAP = ''; }
 
+      // เพิ่ม uniforms ความร้อน (เริ่มค่าใหม่ทุกครั้ง)
       uniforms.uCenter = { value: new THREE.Vector3() };
       uniforms.uRadius = { value: 0.5 };
       uniforms.uHeat   = { value: 0.0 };
@@ -160,6 +163,7 @@
           `
         );
 
+      // ใช้ blend แบบ mix เพื่อให้เห็นความต่างแรงขึ้น
       const fragmentShader =
         'varying vec3 vWorldPos;\n' +
         'uniform vec3 uCenter; uniform float uRadius; uniform float uHeat; uniform float uMix;\n' +
@@ -170,20 +174,18 @@
             float r = length( vWorldPos.xz - uCenter.xz );
             float falloff = 1.0 - smoothstep(0.0, uRadius, r);
 
-            // เขียว -> เหลือง -> ส้ม/แดง
             float k = clamp(uHeat, 0.0, 1.0);
             vec3 g = vec3(0.0,1.0,0.0);
             vec3 y = vec3(1.0,1.0,0.0);
             vec3 rCol = vec3(1.0,0.3,0.0);
             vec3 heatColor = mix( mix(g,y, smoothstep(0.0,0.6,k)), rCol, smoothstep(0.6,1.0,k) );
 
-            vec3 shaded = outgoingLight;                // ผลแสงเงาเดิม
-            float globalMix = (uMix > 0.5) ? (0.55 + 0.45 * k) : 0.0;
-            vec3 tintMul = mix(vec3(1.0), heatColor, globalMix);
-            vec3 lit = shaded * tintMul;
+            vec3 shaded = outgoingLight;                       // สีหลังคำนวณไฟ/เงา
+            float globalMix = (uMix > 0.5) ? (0.50 + 0.50*k) : 0.0;
+            vec3 lit = mix(shaded, heatColor, globalMix);      // ผสมแทนการคูณ เพื่อให้เด่น
 
             float centerBoost = (uMix > 0.5) ? (0.75 * falloff * k) : 0.0;
-            lit += heatColor * centerBoost;
+            lit = mix(lit, heatColor, centerBoost);            // เน้นกลางคอยล์
 
             gl_FragColor = vec4(lit, diffuseColor.a);
             #include <tonemapping_fragment>
@@ -259,7 +261,7 @@
       requestAnimationFrame(animate);
       controls.update();
 
-      // อัปเดต center/radius จาก bounding box ของแต่ละคอยล์
+      // center/radius แยกต่อคอยล์ (คำนวณจาก bounding box world space)
       for(let i=0;i<coilMeshes.length && i<coilUniforms.length;i++){
         const mesh = coilMeshes[i];
         const uni  = coilUniforms[i];
