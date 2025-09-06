@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Transformer — Manual Coils with Radial Heat</title>
+  <title>Transformer — Manual Coils with Radial Heat (safe blend)</title>
 
   <!-- Import Map -->
   <script type="importmap">
@@ -60,7 +60,7 @@
     // --- THREE setup ---
     let scene, camera, renderer, controls, modelRoot = null;
     const coilMeshes = [];   // Wicklung*
-    const coilUniforms = []; // [{uCenter,uRadius,uK}, ...]
+    const coilUniforms = []; // [{uCenter,uRadius,uHeat}, ...]
 
     const MIN_T = 25, MAX_T = 60;
 
@@ -118,7 +118,11 @@
             const n = (o.name||'').toLowerCase();
             if (keys.some(k=>n.includes(k))) {
               o.material = o.material.clone();
-              // อัปเกรด material ให้รองรับ radial heat shader
+
+              // ตั้ง base ให้คอยล์ออกโทนเขียวอ่อนเป็นพื้น (มองเห็นชัวร์)
+              if (o.material.color) o.material.color.set(0x46ff46);
+
+              // อัปเกรด material ให้รองรับ radial heat shader (ปลอดภัย: blend กับแสงเดิม)
               const uniforms = upgradeToRadialHeat(o);
               coilMeshes.push(o);
               coilUniforms.push(uniforms);
@@ -159,25 +163,24 @@
       console.log('[MESH]', names);
     }
 
-    // ---------- Radial Heat Shader ----------
+    // ---------- Radial Heat Shader (safe blend) ----------
     function upgradeToRadialHeat(mesh){
       // คำนวณ center/radius (world) ของคอยล์
       const box = new THREE.Box3().setFromObject(mesh);
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
-      const radius = 0.5 * Math.max(size.x, size.z); // ใช้ระยะคร่าว ๆ ในระนาบ XZ
+      const radius = 0.6 * Math.max(size.x, size.z); // กว้างขึ้นนิดให้เห็นชัด
 
       const uniforms = {
         uCenter: { value: center.clone() },       // world-space center
         uRadius: { value: Math.max(0.001, radius) },
-        uK:      { value: 0.5 }                   // scale ความร้อน 0..1 (จะอัปเดตตาม temp)
+        uHeat:   { value: 0.0 }                   // 0..1 ตาม temp
       };
 
       mesh.material.onBeforeCompile = (shader)=>{
-        // inject uniforms
         Object.assign(shader.uniforms, uniforms);
 
-        // vertex: เก็บตำแหน่งโลกของพิกเซลไว้
+        // ส่งตำแหน่งโลกจาก vertex → fragment
         shader.vertexShader =
           'varying vec3 vWorldPos;\n' +
           shader.vertexShader.replace(
@@ -186,39 +189,40 @@
              vWorldPos = worldPosition.xyz;`
           );
 
-        // fragment: ผสมสีเขียว→เหลืองตามระยะจากจุดศูนย์กลาง
+        // ผสมสีความร้อนกับแสงเดิมแบบปลอดภัย (ไม่ทำโมเดลหาย)
         shader.fragmentShader =
           'varying vec3 vWorldPos;\n' +
           'uniform vec3 uCenter;\n' +
           'uniform float uRadius;\n' +
-          'uniform float uK;\n' +
+          'uniform float uHeat;\n' +
           shader.fragmentShader.replace(
             'gl_FragColor = vec4( outgoingLight, diffuseColor.a );',
             `
-            // radial falloff: 1 ที่กลาง → 0 ที่ขอบ
-            float r = length( (vWorldPos.xz - uCenter.xz) );
-            float falloff = 1.0 - smoothstep(0.0, uRadius, r);
+            // ระยะในระนาบ XZ จากจุดศูนย์กลางของคอยล์
+            float r = length( vWorldPos.xz - uCenter.xz );
+            float falloff = 1.0 - smoothstep(0.0, uRadius, r); // 1 กลาง → 0 ขอบ
 
-            // heat factor ตามอุณหภูมิ (uK 0..1) คูณ falloff
-            float heat = clamp(uK * falloff, 0.0, 1.0);
-
-            // สี เขียว→เหลือง
+            // แผงสี เขียว → เหลือง
             vec3 cold = vec3(0.0,1.0,0.0);
             vec3 hot  = vec3(1.0,1.0,0.0);
-            vec3 heatColor = mix(cold, hot, heat);
 
-            vec3 base = outgoingLight;
-            base = mix(base, heatColor, heat);
+            // สีตามอุณหภูมิ (ไม่เกี่ยวกับระยะ)
+            vec3 palette = mix(cold, hot, clamp(uHeat, 0.0, 1.0));
 
-            gl_FragColor = vec4( base, diffuseColor.a );
+            // ความร้อนตามระยะ (ศูนย์กลางชัด, ขอบน้อยลง)
+            float heat = clamp(uHeat * falloff, 0.0, 1.0);
+
+            // คงแสงเดิมไว้ แล้ว blend สีความร้อนซ้อนทับ + ยกสว่างเล็กน้อยแบบ emissive
+            vec3 lit = outgoingLight;
+            lit = mix(lit, palette, heat * 0.85);    // เปลี่ยนโทนสี
+            lit += palette * (heat * 0.35);          // เสริมสว่าง
+
+            gl_FragColor = vec4( lit, diffuseColor.a );
             `
           );
       };
 
-      // ต้องรีคอมไพล์หนึ่งครั้ง
-      mesh.material.needsUpdate = true;
-
-      // เก็บ uniforms ไว้ให้ปรับภายหลัง
+      mesh.material.needsUpdate = true; // บังคับรีคอมไพล์
       return uniforms;
     }
 
@@ -234,7 +238,7 @@
       const temps = [t1,t2,t3];
       for (let i=0;i<coilUniforms.length && i<temps.length;i++){
         const k = THREE.MathUtils.clamp((temps[i] - MIN_T) / (MAX_T - MIN_T), 0, 1);
-        if (coilUniforms[i]) coilUniforms[i].uK.value = k;
+        if (coilUniforms[i]) coilUniforms[i].uHeat.value = k;
       }
     }
 
