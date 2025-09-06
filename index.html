@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Transformer — Manual Coils (Radial Heat • Texture Overlay)</title>
+  <title>Transformer — Manual Coil Temperatures</title>
 
+  <!-- Import Map -->
   <script type="importmap">
   {"imports":{
     "three":"https://unpkg.com/three@0.155.0/build/three.module.js",
@@ -15,30 +16,28 @@
   <style>
     :root{--hud-bg:rgba(0,0,0,.55)}
     html,body{margin:0;height:100%;background:#0f1115;color:#eee;font-family:system-ui,Segoe UI,Roboto,Arial}
-    #hud{position:fixed;left:12px;top:12px;background:var(--hud-bg);padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.25);z-index:10;min-width:320px}
+    #hud{position:fixed;left:12px;top:12px;background:var(--hud-bg);padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.25);z-index:10;min-width:280px}
     #hud h1{margin:0 0 6px 0;font-size:16px}
-    .row{display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap}
+    .row{display:flex;gap:8px;align-items:center;margin:6px 0}
     .row label{width:64px;opacity:.9}
     .row input[type=range]{flex:1}
     .chip{display:inline-block;min-width:54px;padding:2px 8px;border-radius:999px;background:#1f2430;border:1px solid #333;text-align:center;font-variant-numeric:tabular-nums}
     .btn{background:#1f2430;border:1px solid #333;color:#eee;padding:4px 8px;border-radius:8px;cursor:pointer;margin-right:6px}
     small.mute{opacity:.75}
     canvas{display:block}
-    .switch{display:flex;align-items:center;gap:8px}
   </style>
 </head>
 <body>
   <div id="hud">
-    <h1>Transformer (Radial Heat • Manual)</h1>
+    <h1>Transformer (Manual Coils)</h1>
     <div class="row">
       <button id="fitBtn" class="btn">Auto-fit</button>
       <button id="logBtn" class="btn">Log Meshes</button>
-      <label class="switch"><input id="heatOn" type="checkbox" checked> Heat ON</label>
     </div>
     <div class="row">
       <label>Coil 1</label>
-      <input id="c1" type="range" min="25" max="60" step="0.1" value="25">
-      <span id="t1" class="chip">25.0°C</span>
+      <input id="c1" type="range" min="25" max="60" step="0.1" value="35">
+      <span id="t1" class="chip">35.0°C</span>
     </div>
     <div class="row">
       <label>Coil 2</label>
@@ -47,8 +46,8 @@
     </div>
     <div class="row">
       <label>Coil 3</label>
-      <input id="c3" type="range" min="25" max="60" step="0.1" value="60">
-      <span id="t3" class="chip">60.0°C</span>
+      <input id="c3" type="range" min="25" max="60" step="0.1" value="55">
+      <span id="t3" class="chip">55.0°C</span>
     </div>
     <small class="mute">Tip: drag to orbit, wheel to zoom</small>
   </div>
@@ -58,13 +57,13 @@
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-    let scene, camera, renderer, controls, modelRoot=null;
-    const coilMeshes=[], coilUniforms=[];
-    const MIN_T=25, MAX_T=60;
-    const tmpV3 = new THREE.Vector3();
-    const tmpBox = new THREE.Box3();
+    // --- THREE setup ---
+    let scene, camera, renderer, controls, modelRoot = null;
+    const coilMeshes = []; // จะเก็บ 3 mesh: Wicklung*
 
-    init(); loadModel(); animate();
+    init();
+    loadModel();
+    animate();
 
     function init(){
       scene = new THREE.Scene();
@@ -77,7 +76,6 @@
       renderer.setPixelRatio(devicePixelRatio);
       renderer.setSize(innerWidth, innerHeight);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
-      renderer.debug.checkShaderErrors = true;
       document.body.appendChild(renderer.domElement);
 
       controls = new OrbitControls(camera, renderer.domElement);
@@ -88,7 +86,7 @@
       dir.position.set(6,8,4); scene.add(dir);
 
       const grid = new THREE.GridHelper(20,20,0x444444,0x222222);
-      grid.position.y=0; scene.add(grid);
+      grid.position.y = 0; scene.add(grid);
       scene.add(new THREE.AxesHelper(1));
 
       window.addEventListener('resize', ()=>{
@@ -98,7 +96,12 @@
 
       document.getElementById('fitBtn').onclick = ()=> modelRoot && autoFit(modelRoot,true);
       document.getElementById('logBtn').onclick = ()=> logAllMeshes();
-      ['c1','c2','c3','heatOn'].forEach(id=>document.getElementById(id).addEventListener('input',applyTemps));
+
+      // bind sliders
+      ['c1','c2','c3'].forEach((id,i)=>{
+        const el = document.getElementById(id);
+        el.addEventListener('input', ()=> applyTemps());
+      });
     }
 
     function loadModel(){
@@ -108,113 +111,27 @@
         modelRoot.scale.set(0.01,0.01,0.01);
         scene.add(modelRoot);
 
-        const keys=['wicklung','coil']; // คำหลักสำหรับค้นคอยล์
+        // เลือกคอยล์ด้วยชื่อที่มีคำว่า "Wicklung"
+        const keys = ['wicklung'];
         modelRoot.traverse(o=>{
-          if(o.isMesh){
-            const n=(o.name||'').toLowerCase();
-            if(keys.some(k=>n.includes(k))){
-              console.log('COIL FOUND:', o.name, `(${o.material?.type})`);
-              // วัสดุใหม่ + uniforms ใหม่ต่อ mesh (ไม่แชร์)
-              o.material = makeRadialStandardMaterial(o.material);
-              o.material.needsUpdate = true;
+          if (o.isMesh) {
+            const n = (o.name||'').toLowerCase();
+            if (keys.some(k=>n.includes(k))) {
+              o.material = o.material.clone();
+              if ('emissive' in o.material){ o.material.emissive.set(0x000000); o.material.emissiveIntensity = 0.0; }
               coilMeshes.push(o);
-              coilUniforms.push(o.material.uniforms); // เก็บ uniforms ของวัสดุจริง (แยกชุด)
             }
           }
         });
 
-        if(coilMeshes.length===0) console.warn('ไม่พบคอยล์ (ใช้ Log Meshes ดูชื่อ mesh)');
+        // ให้แน่ใจว่ามีแค่ 3 ชิ้น ถ้ามากกว่านั้นจะใช้แค่สามชิ้นแรก
+        if (coilMeshes.length < 1) console.warn('ไม่พบ mesh ที่เป็นคอยล์ (ชื่อ Wicklung*)');
         autoFit(modelRoot,true);
-        applyTemps();
-      }, undefined, err=>console.error('Load GLB error:', err));
+        applyTemps(); // ลงสีตามค่าเริ่มต้นของสไลเดอร์
+      }, undefined, (err)=> console.error('Load GLB error:', err));
     }
 
-    // วัสดุใหม่: คงแสง/เงา + ซ้อน heat ทับ texture เดิม; uniforms แยกต่อ mesh
-    function makeRadialStandardMaterial(baseMat){
-      const usePhysical = baseMat && /Physical/i.test(baseMat.type||'');
-      const core = THREE.ShaderLib[ usePhysical ? 'physical' : 'standard' ];
-      const uniforms = THREE.UniformsUtils.clone(core.uniforms); // ชุดใหม่ทุกครั้ง
-
-      // sync พารามิเตอร์เดิม
-      if ('roughness' in baseMat) uniforms.roughness.value = baseMat.roughness;
-      if ('metalness' in baseMat) uniforms.metalness.value = baseMat.metalness;
-      if (baseMat.color) uniforms.diffuse.value = baseMat.color.clone();
-      if (baseMat.envMap) uniforms.envMap.value = baseMat.envMap;
-      if (baseMat.emissive) uniforms.emissive.value = baseMat.emissive;
-
-      const defines = usePhysical ? { PHYSICAL: '' } : { STANDARD: '' };
-      if (baseMat.map) { uniforms.map.value = baseMat.map; defines.USE_MAP = ''; }
-
-      // uniforms ของ heat
-      uniforms.uCenter = { value: new THREE.Vector3() };
-      uniforms.uRadius = { value: 0.5 };
-      uniforms.uHeat   = { value: 0.0 };
-      uniforms.uMix    = { value: 1.0 }; // 0=ปิด heat, 1=เปิด
-
-      const vertexShader =
-        'varying vec3 vWorldPos;\n' +
-        core.vertexShader.replace(
-          '#include <project_vertex>',
-          `
-          vec4 wp = modelMatrix * vec4( transformed, 1.0 );
-          vWorldPos = wp.xyz;
-          #include <project_vertex>
-          `
-        );
-
-      const fragmentShader =
-        'varying vec3 vWorldPos;\n' +
-        'uniform vec3 uCenter; uniform float uRadius; uniform float uHeat; uniform float uMix;\n' +
-        core.fragmentShader.replace(
-          '#include <output_fragment>',
-          `
-          {
-            // ระยะบนระนาบ XZ
-            float r = length( vWorldPos.xz - uCenter.xz );
-            float falloff = 1.0 - smoothstep(0.0, uRadius, r);
-
-            // palette: เขียว -> เหลือง -> ส้ม/แดง
-            float k = clamp(uHeat, 0.0, 1.0);
-            vec3 g = vec3(0.0,1.0,0.0);
-            vec3 y = vec3(1.0,1.0,0.0);
-            vec3 rCol = vec3(1.0,0.3,0.0);
-            vec3 heatColor = mix( mix(g,y, smoothstep(0.0,0.6,k)), rCol, smoothstep(0.6,1.0,k) );
-
-            // ผลแสงเงาเดิม (รวม texture แล้ว)
-            vec3 shaded = outgoingLight;
-
-            // Global mix (เห็นผลเด่น)
-            float globalMix = (uMix > 0.5) ? (0.50 + 0.50*k) : 0.0;
-            vec3 lit = mix(shaded, heatColor, globalMix);
-
-            // เน้น hotspot กลางคอยล์
-            float centerBoost = (uMix > 0.5) ? (0.75 * falloff * k) : 0.0;
-            lit = mix(lit, heatColor, centerBoost);
-
-            gl_FragColor = vec4(lit, diffuseColor.a);
-            #include <tonemapping_fragment>
-            #include <colorspace_fragment>
-          }
-          `
-        );
-
-      const material = new THREE.ShaderMaterial({
-        uniforms, vertexShader, fragmentShader,
-        lights: true, fog: true, defines
-      });
-
-      // ค่าจำเป็นจากวัสดุเดิม
-      material.transparent = baseMat.transparent;
-      material.opacity     = baseMat.opacity;
-      material.side        = baseMat.side;
-      material.skinning    = baseMat.skinning || false;
-      material.morphTargets= baseMat.morphTargets || false;
-      material.morphNormals= baseMat.morphNormals || false;
-      material.toneMapped  = true;
-
-      return material; // คืนวัสดุ (uniforms อยู่ภายในวัสดุนี้)
-    }
-
+    // วางโมเดลบนกริดและจัดกล้อง
     function autoFit(root, log=false){
       const box = new THREE.Box3().setFromObject(root);
       const center = box.getCenter(new THREE.Vector3());
@@ -222,63 +139,63 @@
 
       const box2 = new THREE.Box3().setFromObject(root);
       const size2 = box2.getSize(new THREE.Vector3());
-      root.position.y += size2.y/2;
+      root.position.y += size2.y/2; // ฐานแตะ y=0
 
-      const maxDim = Math.max(size2.x, size2.y, size2.z);
+      const maxDim = Math.max(size2.x,size2.y,size2.z);
       const fov = camera.fov * Math.PI/180;
-      const camDist = Math.abs(maxDim/(2*Math.tan(fov/2))) * 1.8;
+      const camDist = Math.abs(maxDim / (2*Math.tan(fov/2))) * 1.8;
       camera.position.set(camDist, camDist*0.6, camDist);
-      camera.near = Math.max(0.001, camDist/100);
-      camera.far  = camDist*100;
+      camera.near = Math.max(0.001, camDist/100); camera.far = camDist*100;
       camera.updateProjectionMatrix();
-      controls.target.set(0, size2.y*0.55, 0);
-      controls.update();
+      controls.target.set(0, size2.y*0.55, 0); controls.update();
       if (log) console.log('[FIT] size:', size2, 'camDist:', camDist.toFixed(2));
     }
 
     function logAllMeshes(){
-      if(!modelRoot) return;
-      const names=[]; modelRoot.traverse(o=>{ if(o.isMesh) names.push(`${o.name||'(unnamed)'} • ${o.material?.type||'-'}`); });
+      if (!modelRoot) return;
+      const names = [];
+      modelRoot.traverse(o=>{ if (o.isMesh) names.push(o.name||'(unnamed)'); });
       console.log('[MESH]', names);
     }
 
+    // --- Manual temperatures ---
+    const MIN_T = 25, MAX_T = 60;
+
     function applyTemps(){
-      const temps=[
-        parseFloat(document.getElementById('c1').value),
-        parseFloat(document.getElementById('c2').value),
-        parseFloat(document.getElementById('c3').value)
-      ];
-      const heatOn = document.getElementById('heatOn').checked ? 1.0 : 0.0;
+      const t1 = parseFloat(document.getElementById('c1').value);
+      const t2 = parseFloat(document.getElementById('c2').value);
+      const t3 = parseFloat(document.getElementById('c3').value);
+      document.getElementById('t1').textContent = t1.toFixed(1)+'°C';
+      document.getElementById('t2').textContent = t2.toFixed(1)+'°C';
+      document.getElementById('t3').textContent = t3.toFixed(1)+'°C';
 
-      document.getElementById('t1').textContent = temps[0].toFixed(1)+'°C';
-      document.getElementById('t2').textContent = temps[1].toFixed(1)+'°C';
-      document.getElementById('t3').textContent = temps[2].toFixed(1)+'°C';
-
-      for(let i=0;i<coilUniforms.length && i<temps.length;i++){
-        const k = THREE.MathUtils.clamp((temps[i]-MIN_T)/(MAX_T-MIN_T),0,1);
-        coilUniforms[i].uHeat.value = k;          // แยกต่อคอยล์
-        coilUniforms[i].uMix.value  = heatOn;
-        console.log(`[HEAT] coil${i+1}: T=${temps[i].toFixed(1)}°C  k=${k.toFixed(3)}  on=${heatOn}`);
+      const temps = [t1,t2,t3];
+      for (let i=0;i<coilMeshes.length && i<temps.length;i++){
+        paintCoil(coilMeshes[i], temps[i]);
       }
     }
 
+    // สี เขียว → เหลือง (ตามสเกล 25–60°C) + emissive boost
+    function paintCoil(mesh, t){
+      const GREEN  = new THREE.Color(0x00ff00);
+      const YELLOW = new THREE.Color(0xffff00);
+      const k = THREE.MathUtils.clamp((t - MIN_T) / (MAX_T - MIN_T), 0, 1);
+      const hex = GREEN.clone().lerp(YELLOW, k).getHex();
+      try{
+        mesh.material.color?.setHex?.(hex);
+        if ('emissive' in mesh.material){
+          mesh.material.emissive.setHex(hex);
+          if ('emissiveIntensity' in mesh.material) mesh.material.emissiveIntensity = 0.15 + 0.85*k;
+        }
+        mesh.material.needsUpdate = true;
+      }catch(e){ console.warn('update material failed on', mesh.name, e); }
+    }
+
+    // --- render ---
     function animate(){
       requestAnimationFrame(animate);
       controls.update();
-
-      // อัปเดต center/radius ต่อคอยล์ (คำนวณจาก bounding box world space)
-      for(let i=0;i<coilMeshes.length && i<coilUniforms.length;i++){
-        const mesh = coilMeshes[i];
-        const uni  = coilUniforms[i];
-        tmpBox.setFromObject(mesh);
-        tmpBox.getCenter(tmpV3);
-        uni.uCenter.value.copy(tmpV3);
-
-        const size = tmpBox.getSize(new THREE.Vector3());
-        uni.uRadius.value = 0.45 * Math.max(size.x, size.z);
-      }
-
-      renderer.render(scene,camera);
+      renderer.render(scene, camera);
     }
   </script>
 </body>
