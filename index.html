@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Transformer — Manual Coils (Radial Heat • Final)</title>
+  <title>Transformer — Manual Coils (Radial Heat)</title>
 
   <!-- Import Map -->
   <script type="importmap">
@@ -16,12 +16,14 @@
   <style>
     :root{--hud-bg:rgba(0,0,0,.55)}
     html,body{margin:0;height:100%;background:#0f1115;color:#eee;font-family:system-ui,Segoe UI,Roboto,Arial}
-    #hud{position:fixed;left:12px;top:12px;background:var(--hud-bg);padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.25);z-index:10;min-width:300px}
+    #hud{position:fixed;left:12px;top:12px;background:var(--hud-bg);padding:12px;border-radius:12px;
+         box-shadow:0 6px 18px rgba(0,0,0,.25);z-index:10;min-width:300px}
     #hud h1{margin:0 0 6px 0;font-size:16px}
     .row{display:flex;gap:8px;align-items:center;margin:6px 0}
     .row label{width:64px;opacity:.9}
     .row input[type=range]{flex:1}
-    .chip{display:inline-block;min-width:54px;padding:2px 8px;border-radius:999px;background:#1f2430;border:1px solid #333;text-align:center;font-variant-numeric:tabular-nums}
+    .chip{display:inline-block;min-width:54px;padding:2px 8px;border-radius:999px;background:#1f2430;border:1px solid #333;
+          text-align:center;font-variant-numeric:tabular-nums}
     .btn{background:#1f2430;border:1px solid #333;color:#eee;padding:4px 8px;border-radius:8px;cursor:pointer;margin-right:6px}
     small.mute{opacity:.75}
     canvas{display:block}
@@ -57,17 +59,13 @@
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-    // --- THREE setup ---
-    let scene, camera, renderer, controls, modelRoot = null;
-    const coilMeshes = [];     // รายการ mesh ของคอยล์ (Wicklung*)
-    const coilUniforms = [];   // รายการ uniforms ของแต่ละคอยล์ { uCenter, uRadius, uHeat }
+    // ----- globals -----
+    let scene, camera, renderer, controls, modelRoot=null;
+    const coilMeshes=[], coilUniforms=[]; // {uCenter,uRadius,uHeat}
+    const MIN_T=25, MAX_T=60;
+    const tmpV3 = new THREE.Vector3();
 
-    const MIN_T = 25, MAX_T = 60;
-    const tmpV3 = new THREE.Vector3(); // ใช้สำหรับอัปเดตตำแหน่งโลกทุกเฟรม
-
-    init();
-    loadModel();
-    animate();
+    init(); loadModel(); animate();
 
     function init(){
       scene = new THREE.Scene();
@@ -91,7 +89,7 @@
       dir.position.set(6,8,4); scene.add(dir);
 
       const grid = new THREE.GridHelper(20,20,0x444444,0x222222);
-      grid.position.y = 0; scene.add(grid);
+      grid.position.y=0; scene.add(grid);
       scene.add(new THREE.AxesHelper(1));
 
       window.addEventListener('resize', ()=>{
@@ -102,8 +100,7 @@
       document.getElementById('fitBtn').onclick = ()=> modelRoot && autoFit(modelRoot,true);
       document.getElementById('logBtn').onclick = ()=> logAllMeshes();
 
-      // bind sliders
-      ['c1','c2','c3'].forEach(id => document.getElementById(id).addEventListener('input', applyTemps));
+      ['c1','c2','c3'].forEach(id=>document.getElementById(id).addEventListener('input',applyTemps));
     }
 
     function loadModel(){
@@ -113,73 +110,67 @@
         modelRoot.scale.set(0.01,0.01,0.01);
         scene.add(modelRoot);
 
-        const keys = ['wicklung']; // คำหลักที่ครอบคลุม Wicklung, Wicklung2, Wicklung3
-modelRoot.traverse(o=>{
-  if (o.isMesh) {
-    const n = (o.name||'').toLowerCase();
-    if (keys.some(k=>n.includes(k))) {
-      console.log("COIL FOUND:", o.name); // debug
-      o.material = o.material.clone();
-      o.material.color?.set?.(0x46ff46);
-      const uniforms = upgradeToRadialHeat(o);
-      coilMeshes.push(o);
-      coilUniforms.push(uniforms);
-    }
-  }
-});
+        // เลือกคอยล์: Wicklung, Wicklung2, Wicklung3
+        const keys=['wicklung']; // ครอบคลุมทุกชื่อย่อย
+        modelRoot.traverse(o=>{
+          if(o.isMesh){
+            const n=(o.name||'').toLowerCase();
+            if(keys.some(k=>n.includes(k))){
+              console.log('COIL FOUND:', o.name);
+              o.material = o.material.clone();
+              o.material.color?.set?.(0x46ff46);   // base เขียวอ่อน
+              const uniforms = upgradeToRadialHeat(o);
+              coilMeshes.push(o); coilUniforms.push(uniforms);
+            }
+          }
+        });
 
-
-        if (coilMeshes.length === 0) console.warn('ไม่พบคอยล์ (ชื่อ Wicklung*)');
+        if(coilMeshes.length===0) console.warn('ไม่พบคอยล์');
         autoFit(modelRoot,true);
-        applyTemps(); // ลงค่าจากสไลเดอร์ครั้งแรก
-      }, undefined, (err)=> console.error('Load GLB error:', err));
+        applyTemps();
+      }, undefined, err=>console.error('Load GLB error:', err));
     }
 
-    // วางโมเดลบนกริดและจัดกล้อง
     function autoFit(root, log=false){
-      const box = new THREE.Box3().setFromObject(root);
-      const center = box.getCenter(new THREE.Vector3());
+      const box=new THREE.Box3().setFromObject(root);
+      const center=box.getCenter(new THREE.Vector3());
       root.position.sub(center);
 
-      const box2 = new THREE.Box3().setFromObject(root);
-      const size2 = box2.getSize(new THREE.Vector3());
-      root.position.y += size2.y/2; // ฐานแตะ y=0
+      const box2=new THREE.Box3().setFromObject(root);
+      const size2=box2.getSize(new THREE.Vector3());
+      root.position.y += size2.y/2;
 
-      const maxDim = Math.max(size2.x,size2.y,size2.z);
-      const fov = camera.fov * Math.PI/180;
-      const camDist = Math.abs(maxDim / (2*Math.tan(fov/2))) * 1.8;
-      camera.position.set(camDist, camDist*0.6, camDist);
-      camera.near = Math.max(0.001, camDist/100); camera.far = camDist*100;
-      camera.updateProjectionMatrix();
-      controls.target.set(0, size2.y*0.55, 0); controls.update();
-      if (log) console.log('[FIT] size:', size2, 'camDist:', camDist.toFixed(2));
+      const maxDim=Math.max(size2.x,size2.y,size2.z);
+      const fov=camera.fov*Math.PI/180;
+      const camDist = Math.abs(maxDim/(2*Math.tan(fov/2)))*1.8;
+      camera.position.set(camDist,camDist*0.6,camDist);
+      camera.near=Math.max(0.001,camDist/100); camera.far=camDist*100; camera.updateProjectionMatrix();
+      controls.target.set(0,size2.y*0.55,0); controls.update();
+      if(log) console.log('[FIT] size:', size2, 'camDist:', camDist.toFixed(2));
     }
 
     function logAllMeshes(){
-      if (!modelRoot) return;
-      const names = [];
-      modelRoot.traverse(o=>{ if (o.isMesh) names.push(o.name||'(unnamed)'); });
+      if(!modelRoot) return;
+      const names=[]; modelRoot.traverse(o=>{ if(o.isMesh) names.push(o.name||'(unnamed)'); });
       console.log('[MESH]', names);
     }
 
-    // ---------- Radial Heat Shader (robust) ----------
+    // ----- shader upgrade (radial heat) -----
     function upgradeToRadialHeat(mesh){
-      // ใช้ bounding box (หลัง scale แล้ว) เพื่อประมาณรัศมีในระนาบ XZ
-      const box = new THREE.Box3().setFromObject(mesh);
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-      const radius = 0.9 * Math.max(size.x, size.z); // กว้างขึ้นหน่อยให้เห็นชัด
+      const box=new THREE.Box3().setFromObject(mesh);
+      const size=box.getSize(new THREE.Vector3());
+      const center=box.getCenter(new THREE.Vector3());
+      const radius=0.9*Math.max(size.x,size.z);
 
-      const uniforms = {
-        uCenter: { value: center.clone() },      // world center (จะอัปเดตทุกเฟรม)
-        uRadius: { value: Math.max(0.001, radius) },
-        uHeat:   { value: 0.0 }                  // 0..1 จากสไลเดอร์
+      const uniforms={
+        uCenter:{value:center.clone()},
+        uRadius:{value:Math.max(0.001,radius)},
+        uHeat:{value:0.0}
       };
 
-      mesh.material.onBeforeCompile = (shader)=>{
+      mesh.material.onBeforeCompile=(shader)=>{
         Object.assign(shader.uniforms, uniforms);
 
-        // ส่งตำแหน่งโลกจาก vertex → fragment (คำนวณเอง)
         shader.vertexShader =
           'varying vec3 vWorldPos;\n' +
           shader.vertexShader.replace(
@@ -191,7 +182,6 @@ modelRoot.traverse(o=>{
             `
           );
 
-        // ผสมสีความร้อนกับแสงเดิมก่อนออกผลลัพธ์
         shader.fragmentShader =
           'varying vec3 vWorldPos;\n' +
           'uniform vec3 uCenter;\n' +
@@ -204,16 +194,15 @@ modelRoot.traverse(o=>{
               float r = length( vWorldPos.xz - uCenter.xz );
               float falloff = 1.0 - smoothstep(0.0, uRadius, r); // 1 กลาง → 0 ขอบ
 
-              // พาเล็ต เขียว → เหลือง
+              // เขียว → เหลือง ตาม uHeat ของคอยล์นั้น
               vec3 cold = vec3(0.0,1.0,0.0);
               vec3 hot  = vec3(1.0,1.0,0.0);
-              vec3 palette = mix(cold, hot, clamp(uHeat, 0.0, 1.0));
+              vec3 baseColor = mix(cold, hot, clamp(uHeat, 0.0, 1.0));
 
-              float heat = clamp(uHeat * falloff, 0.0, 1.0);
-
-              vec3 lit = outgoingLight;      // แสงจาก PBR เดิม
-              lit = mix(lit, palette, heat); // เปลี่ยนโทนสีให้ชัด
-              lit += palette * (heat * 0.45);// boost สว่างแบบ emissive
+              // สีเปลี่ยนทั่วคอยล์ (ตาม uHeat) + กลางสว่างกว่า (falloff)
+              vec3 lit = outgoingLight;
+              lit = mix(lit, baseColor, falloff);   // เปลี่ยนโทนสี
+              lit += baseColor * (falloff * 0.5);   // boost ตรงกลาง
 
               gl_FragColor = vec4(lit, diffuseColor.a);
             }
@@ -221,40 +210,39 @@ modelRoot.traverse(o=>{
           );
       };
 
-      mesh.material.needsUpdate = true;
+      mesh.material.needsUpdate=true;
       return uniforms;
     }
 
-    // ---------- Manual temperatures ----------
+    // ----- manual temps -----
     function applyTemps(){
-      const t1 = parseFloat(document.getElementById('c1').value);
-      const t2 = parseFloat(document.getElementById('c2').value);
-      const t3 = parseFloat(document.getElementById('c3').value);
-      document.getElementById('t1').textContent = t1.toFixed(1)+'°C';
-      document.getElementById('t2').textContent = t2.toFixed(1)+'°C';
-      document.getElementById('t3').textContent = t3.toFixed(1)+'°C';
+      const temps=[
+        parseFloat(document.getElementById('c1').value),
+        parseFloat(document.getElementById('c2').value),
+        parseFloat(document.getElementById('c3').value)
+      ];
+      document.getElementById('t1').textContent = temps[0].toFixed(1)+'°C';
+      document.getElementById('t2').textContent = temps[1].toFixed(1)+'°C';
+      document.getElementById('t3').textContent = temps[2].toFixed(1)+'°C';
 
-      const temps = [t1,t2,t3];
-      for (let i=0;i<coilUniforms.length && i<temps.length;i++){
-        const k = THREE.MathUtils.clamp((temps[i] - MIN_T) / (MAX_T - MIN_T), 0, 1);
+      for(let i=0;i<coilUniforms.length && i<temps.length;i++){
+        const k = THREE.MathUtils.clamp((temps[i]-MIN_T)/(MAX_T-MIN_T),0,1);
         coilUniforms[i].uHeat.value = k;
       }
     }
 
-    // --- render loop (อัปเดต uCenter ทุกเฟรม) ---
+    // ----- render loop (update centers every frame) -----
     function animate(){
       requestAnimationFrame(animate);
       controls.update();
 
-      // อัปเดตศูนย์กลางคอยล์ให้ตรงตำแหน่งโลกจริงทุกเฟรม (กันค่าคลาดหลัง Auto-fit/Orbit)
-      for (let i=0; i<coilMeshes.length && i<coilUniforms.length; i++){
+      for(let i=0;i<coilMeshes.length && i<coilUniforms.length;i++){
         coilMeshes[i].getWorldPosition(tmpV3);
         coilUniforms[i].uCenter.value.copy(tmpV3);
       }
 
-      renderer.render(scene, camera);
+      renderer.render(scene,camera);
     }
   </script>
 </body>
 </html>
-
