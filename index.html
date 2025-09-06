@@ -59,7 +59,8 @@
 
     // --- THREE setup ---
     let scene, camera, renderer, controls, modelRoot = null;
-    const coilMeshes = []; // จะเก็บ 3 mesh: Wicklung*
+    const coilMeshes = [];     // Mesh คอยล์ตัวจริง (วัสดุเดิม)
+    const coilOverlays = [];   // Mesh โอเวอร์เลย์ (สีตามอุณหภูมิ)
 
     init();
     loadModel();
@@ -98,9 +99,8 @@
       document.getElementById('logBtn').onclick = ()=> logAllMeshes();
 
       // bind sliders
-      ['c1','c2','c3'].forEach((id,i)=>{
-        const el = document.getElementById(id);
-        el.addEventListener('input', ()=> applyTemps());
+      ['c1','c2','c3'].forEach(id=>{
+        document.getElementById(id).addEventListener('input', applyTemps);
       });
     }
 
@@ -117,14 +117,29 @@
           if (o.isMesh) {
             const n = (o.name||'').toLowerCase();
             if (keys.some(k=>n.includes(k))) {
-              o.material = o.material.clone();
-              if ('emissive' in o.material){ o.material.emissive.set(0x000000); o.material.emissiveIntensity = 0.0; }
+              // เก็บ mesh คอยล์เดิม
               coilMeshes.push(o);
+
+              // --- สร้าง overlay ซ้อนทับคอยล์ ---
+              const overlay = o.clone();
+              overlay.name = (o.name||'coil') + '_overlay';
+              overlay.material = new THREE.MeshBasicMaterial({
+                color: 0x00ff00,            // จะอัปเดตใน paintCoil()
+                transparent: true,
+                opacity: 0.65,
+                depthWrite: false,
+                blending: THREE.AdditiveBlending,
+                polygonOffset: true,
+                polygonOffsetFactor: -1,    // ดัน overlay ออกนิด ๆ กัน z-fighting
+                polygonOffsetUnits: -1
+              });
+              overlay.renderOrder = 999;    // ให้วาดทับชิ้นเดิมเสมอ
+              o.add(overlay);               // ผูก overlay เป็นลูกของคอยล์ (ตำแหน่ง/สเกลตรงกัน)
+              coilOverlays.push(overlay);
             }
           }
         });
 
-        // ให้แน่ใจว่ามีแค่ 3 ชิ้น ถ้ามากกว่านั้นจะใช้แค่สามชิ้นแรก
         if (coilMeshes.length < 1) console.warn('ไม่พบ mesh ที่เป็นคอยล์ (ชื่อ Wicklung*)');
         autoFit(modelRoot,true);
         applyTemps(); // ลงสีตามค่าเริ่มต้นของสไลเดอร์
@@ -170,25 +185,24 @@
       document.getElementById('t3').textContent = t3.toFixed(1)+'°C';
 
       const temps = [t1,t2,t3];
-      for (let i=0;i<coilMeshes.length && i<temps.length;i++){
-        paintCoil(coilMeshes[i], temps[i]);
+      for (let i=0;i<coilOverlays.length && i<temps.length;i++){
+        paintCoilOverlay(coilOverlays[i], temps[i]);
       }
     }
 
-    // สี เขียว → เหลือง (ตามสเกล 25–60°C) + emissive boost
-    function paintCoil(mesh, t){
+    // ไล่สี overlay: เขียว → เหลือง ตามสเกล 25–60°C
+    function paintCoilOverlay(overlayMesh, t){
       const GREEN  = new THREE.Color(0x00ff00);
       const YELLOW = new THREE.Color(0xffff00);
       const k = THREE.MathUtils.clamp((t - MIN_T) / (MAX_T - MIN_T), 0, 1);
-      const hex = GREEN.clone().lerp(YELLOW, k).getHex();
-      try{
-        mesh.material.color?.setHex?.(hex);
-        if ('emissive' in mesh.material){
-          mesh.material.emissive.setHex(hex);
-          if ('emissiveIntensity' in mesh.material) mesh.material.emissiveIntensity = 0.15 + 0.85*k;
-        }
-        mesh.material.needsUpdate = true;
-      }catch(e){ console.warn('update material failed on', mesh.name, e); }
+
+      const col = GREEN.clone().lerp(YELLOW, k);
+      const mat = overlayMesh.material;
+      mat.color.copy(col);
+
+      // ปรับความเข้มตามอุณหภูมิ (อุ่น = เข้มขึ้น)
+      mat.opacity = 0.35 + 0.65 * k;
+      mat.needsUpdate = true;
     }
 
     // --- render ---
