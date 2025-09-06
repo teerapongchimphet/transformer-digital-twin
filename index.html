@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Transformer — Manual Coil Temperatures</title>
+  <title>Transformer — Manual Coil Temperatures (Elliptical Hotspot)</title>
 
   <script type="importmap">
   {"imports":{
@@ -57,16 +57,17 @@
     import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
     let scene, camera, renderer, controls, modelRoot=null;
-    const coilMeshes=[];        // Wicklung*
-    const coilOverlays=[];      // overlay meshes ติดตามคอยล์
+    const coilMeshes=[];          // Wicklung*
+    const coilOverlays=[];        // overlay meshes
+    const overlayUniforms=[];     // uniforms ต่อคอยล์
 
     // temps
     const MIN_T=25, MAX_T=60;
 
-    // tmp objects
-    const tmpPos=new THREE.Vector3();
-    const tmpQuat=new THREE.Quaternion();
-    const tmpScl=new THREE.Vector3();
+    // tmp
+    const tmpV3=new THREE.Vector3();
+    const tmpBox=new THREE.Box3();
+    const tmpSize=new THREE.Vector3();
 
     init(); loadModel(); animate();
 
@@ -112,7 +113,6 @@
         modelRoot.scale.set(0.01,0.01,0.01);
         scene.add(modelRoot);
 
-        // หา mesh ชื่อ Wicklung*
         const keys=['wicklung'];
         modelRoot.traverse(o=>{
           if(!o.isMesh) return;
@@ -121,26 +121,16 @@
 
           coilMeshes.push(o);
 
-          // === สร้าง overlay แยก, ไม่ผูกเป็นลูกของคอยล์ ===
-          const overlay = new THREE.Mesh(
-            o.geometry,
-            new THREE.MeshBasicMaterial({
-              color: 0x00ff00,
-              transparent: true,
-              opacity: 0.6,
-              depthWrite: false,
-              depthTest: true,
-              blending: THREE.AdditiveBlending,
-              polygonOffset: true,
-              polygonOffsetFactor: -1,
-              polygonOffsetUnits: -1
-            })
-          );
-          overlay.name = (o.name||'coil') + '_overlay';
-          overlay.matrixAutoUpdate = false; // เราจะอัปเดตด้วย matrixWorld ของต้นฉบับ
+          // ===== Overlay + Shader วงรี =====
+          const {material, uniforms} = makeEllipticalOverlayMaterial();
+          const overlay = new THREE.Mesh(o.geometry, material);
+          overlay.name = (o.name||'coil')+'_overlay';
+          overlay.matrixAutoUpdate = false;   // sync จากต้นฉบับ
           overlay.renderOrder = 999;
           scene.add(overlay);
+
           coilOverlays.push(overlay);
+          overlayUniforms.push(uniforms);
         });
 
         if(coilMeshes.length===0) console.warn('ไม่พบ mesh ที่เป็นคอยล์ (ชื่อ Wicklung*)');
@@ -148,6 +138,68 @@
         autoFit(modelRoot,true);
         applyTemps();
       }, undefined, err=>console.error('Load GLB error:', err));
+    }
+
+    // วัสดุ overlay: additive, hotspot วงรีบนระนาบ XZ
+    function makeEllipticalOverlayMaterial(){
+      const uniforms = {
+        uCenter:  { value: new THREE.Vector3() }, // world-space
+        uRadiusX: { value: 0.5 },
+        uRadiusZ: { value: 0.5 },
+        uHeat:    { value: 0.0 },  // 0..1
+        uOpacity: { value: 0.6 },  // base opacity
+        uStrength:{ value: 0.9 }   // ความแรง hotspot
+      };
+
+      const vertexShader = /* glsl */`
+        varying vec3 vWorldPos;
+        void main(){
+          vec4 wp = modelMatrix * vec4(position,1.0);
+          vWorldPos = wp.xyz;
+          gl_Position = projectionMatrix * viewMatrix * wp;
+        }
+      `;
+
+      const fragmentShader = /* glsl */`
+        precision highp float;
+        varying vec3 vWorldPos;
+        uniform vec3  uCenter;
+        uniform float uRadiusX, uRadiusZ;
+        uniform float uHeat, uOpacity, uStrength;
+
+        void main(){
+          // ระยะวงรีบนระนาบ XZ
+          vec2 d = vWorldPos.xz - uCenter.xz;
+          float ell = sqrt( (d.x*d.x)/(uRadiusX*uRadiusX + 1e-6) +
+                            (d.y*d.y)/(uRadiusZ*uRadiusZ + 1e-6) );
+          // 0 ที่ศูนย์กลาง, 1 ที่ขอบวงรี
+          float falloff = clamp(1.0 - smoothstep(0.0, 1.0, ell), 0.0, 1.0);
+
+          // palette เขียว->เหลือง
+          vec3 cold = vec3(0.0,1.0,0.0);
+          vec3 hot  = vec3(1.0,1.0,0.0);
+          vec3 base = mix(cold, hot, clamp(uHeat,0.0,1.0));
+
+          // ความเข้มรวม = baseOpacity + hotspotBoost
+          float alpha = uOpacity * (0.35 + 0.65*uHeat);
+          vec3 color  = base * (alpha + uStrength * falloff * uHeat);
+
+          gl_FragColor = vec4(color, alpha); // additive blending จะใช้ทั้งสีและอัลฟ่า
+        }
+      `;
+
+      const material = new THREE.ShaderMaterial({
+        uniforms, vertexShader, fragmentShader,
+        transparent: true,
+        depthWrite: false,
+        depthTest: true,
+        blending: THREE.AdditiveBlending,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1
+      });
+
+      return { material, uniforms };
     }
 
     function autoFit(root, log=false){
@@ -175,40 +227,42 @@
     }
 
     function applyTemps(){
-      const t1 = parseFloat(document.getElementById('c1').value);
-      const t2 = parseFloat(document.getElementById('c2').value);
-      const t3 = parseFloat(document.getElementById('c3').value);
-      document.getElementById('t1').textContent = t1.toFixed(1)+'°C';
-      document.getElementById('t2').textContent = t2.toFixed(1)+'°C';
-      document.getElementById('t3').textContent = t3.toFixed(1)+'°C';
+      const temps = [
+        parseFloat(document.getElementById('c1').value),
+        parseFloat(document.getElementById('c2').value),
+        parseFloat(document.getElementById('c3').value)
+      ];
+      document.getElementById('t1').textContent = temps[0].toFixed(1)+'°C';
+      document.getElementById('t2').textContent = temps[1].toFixed(1)+'°C';
+      document.getElementById('t3').textContent = temps[2].toFixed(1)+'°C';
 
-      const temps=[t1,t2,t3];
-      for(let i=0;i<coilOverlays.length && i<temps.length;i++){
-        paintOverlay(coilOverlays[i], temps[i]);
+      for(let i=0;i<overlayUniforms.length && i<temps.length;i++){
+        const k = THREE.MathUtils.clamp((temps[i]-MIN_T)/(MAX_T-MIN_T),0,1);
+        overlayUniforms[i].uHeat.value = k;
       }
     }
 
-    // ไล่สี overlay: เขียว → เหลือง + ความทึบตามอุณหภูมิ
-    function paintOverlay(overlay, t){
-      const GREEN=new THREE.Color(0x00ff00);
-      const YELLOW=new THREE.Color(0xffff00);
-      const k = THREE.MathUtils.clamp((t-MIN_T)/(MAX_T-MIN_T),0,1);
-
-      const col = GREEN.clone().lerp(YELLOW,k);
-      const m = overlay.material;
-      m.color.copy(col);
-      m.opacity = 0.35 + 0.65*k;
-      m.needsUpdate = true;
-    }
-
-    // sync overlay ให้ตรงกับคอยล์ต้นฉบับทุกเฟรม (ด้วย world matrix)
+    // sync overlay transforms + อัปเดต center/radii วงรีจาก bounding box (world space)
     function syncOverlays(){
       for(let i=0;i<coilOverlays.length && i<coilMeshes.length;i++){
         const src = coilMeshes[i];
         const dst = coilOverlays[i];
+        const uni = overlayUniforms[i];
+
+        // ติดตามทรานส์ฟอร์ม
         src.updateWorldMatrix(true,false);
         dst.matrix.copy(src.matrixWorld);
         dst.matrixWorldNeedsUpdate = true;
+
+        // คำนวณศูนย์กลางและรัศมีวงรีใน world space
+        tmpBox.setFromObject(src);
+        tmpBox.getCenter(tmpV3);
+        tmpBox.getSize(tmpSize);
+
+        uni.uCenter.value.copy(tmpV3);
+        // hotspot ครอบ ~45% ของหน้าตัด X/Z
+        uni.uRadiusX.value = 0.45 * tmpSize.x;
+        uni.uRadiusZ.value = 0.45 * tmpSize.z;
       }
     }
 
