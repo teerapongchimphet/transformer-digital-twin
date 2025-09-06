@@ -108,17 +108,17 @@
         modelRoot.scale.set(0.01,0.01,0.01);
         scene.add(modelRoot);
 
-        const keys=['wicklung','coil'];
+        const keys=['wicklung','coil']; // คำหลักสำหรับค้นคอยล์
         modelRoot.traverse(o=>{
           if(o.isMesh){
             const n=(o.name||'').toLowerCase();
             if(keys.some(k=>n.includes(k))){
               console.log('COIL FOUND:', o.name, `(${o.material?.type})`);
-              const { material, uniforms } = makeRadialStandardMaterial(o.material);
-              o.material = material;                   // วัสดุใหม่สำหรับ mesh นี้เท่านั้น
+              // วัสดุใหม่ + uniforms ใหม่ต่อ mesh (ไม่แชร์)
+              o.material = makeRadialStandardMaterial(o.material);
               o.material.needsUpdate = true;
               coilMeshes.push(o);
-              coilUniforms.push(uniforms);             // เก็บ reference ของ uniforms ชุดนี้ (ไม่แชร์กับชิ้นอื่น)
+              coilUniforms.push(o.material.uniforms); // เก็บ uniforms ของวัสดุจริง (แยกชุด)
             }
           }
         });
@@ -129,14 +129,13 @@
       }, undefined, err=>console.error('Load GLB error:', err));
     }
 
-    // วัสดุใหม่: คงแสง/เงา + ซ้อน heat ทับ texture เดิม; uniforms ใหม่ต่อ mesh
+    // วัสดุใหม่: คงแสง/เงา + ซ้อน heat ทับ texture เดิม; uniforms แยกต่อ mesh
     function makeRadialStandardMaterial(baseMat){
       const usePhysical = baseMat && /Physical/i.test(baseMat.type||'');
       const core = THREE.ShaderLib[ usePhysical ? 'physical' : 'standard' ];
+      const uniforms = THREE.UniformsUtils.clone(core.uniforms); // ชุดใหม่ทุกครั้ง
 
-      // <<< สำคัญ: clone ชุดใหม่ เพื่อไม่ให้แชร์กัน >>>
-      const uniforms = THREE.UniformsUtils.clone(core.uniforms);
-
+      // sync พารามิเตอร์เดิม
       if ('roughness' in baseMat) uniforms.roughness.value = baseMat.roughness;
       if ('metalness' in baseMat) uniforms.metalness.value = baseMat.metalness;
       if (baseMat.color) uniforms.diffuse.value = baseMat.color.clone();
@@ -146,7 +145,7 @@
       const defines = usePhysical ? { PHYSICAL: '' } : { STANDARD: '' };
       if (baseMat.map) { uniforms.map.value = baseMat.map; defines.USE_MAP = ''; }
 
-      // เพิ่ม uniforms ความร้อน (เริ่มค่าใหม่ทุกครั้ง)
+      // uniforms ของ heat
       uniforms.uCenter = { value: new THREE.Vector3() };
       uniforms.uRadius = { value: 0.5 };
       uniforms.uHeat   = { value: 0.0 };
@@ -163,7 +162,6 @@
           `
         );
 
-      // ใช้ blend แบบ mix เพื่อให้เห็นความต่างแรงขึ้น
       const fragmentShader =
         'varying vec3 vWorldPos;\n' +
         'uniform vec3 uCenter; uniform float uRadius; uniform float uHeat; uniform float uMix;\n' +
@@ -171,21 +169,27 @@
           '#include <output_fragment>',
           `
           {
+            // ระยะบนระนาบ XZ
             float r = length( vWorldPos.xz - uCenter.xz );
             float falloff = 1.0 - smoothstep(0.0, uRadius, r);
 
+            // palette: เขียว -> เหลือง -> ส้ม/แดง
             float k = clamp(uHeat, 0.0, 1.0);
             vec3 g = vec3(0.0,1.0,0.0);
             vec3 y = vec3(1.0,1.0,0.0);
             vec3 rCol = vec3(1.0,0.3,0.0);
             vec3 heatColor = mix( mix(g,y, smoothstep(0.0,0.6,k)), rCol, smoothstep(0.6,1.0,k) );
 
-            vec3 shaded = outgoingLight;                       // สีหลังคำนวณไฟ/เงา
-            float globalMix = (uMix > 0.5) ? (0.50 + 0.50*k) : 0.0;
-            vec3 lit = mix(shaded, heatColor, globalMix);      // ผสมแทนการคูณ เพื่อให้เด่น
+            // ผลแสงเงาเดิม (รวม texture แล้ว)
+            vec3 shaded = outgoingLight;
 
+            // Global mix (เห็นผลเด่น)
+            float globalMix = (uMix > 0.5) ? (0.50 + 0.50*k) : 0.0;
+            vec3 lit = mix(shaded, heatColor, globalMix);
+
+            // เน้น hotspot กลางคอยล์
             float centerBoost = (uMix > 0.5) ? (0.75 * falloff * k) : 0.0;
-            lit = mix(lit, heatColor, centerBoost);            // เน้นกลางคอยล์
+            lit = mix(lit, heatColor, centerBoost);
 
             gl_FragColor = vec4(lit, diffuseColor.a);
             #include <tonemapping_fragment>
@@ -199,6 +203,7 @@
         lights: true, fog: true, defines
       });
 
+      // ค่าจำเป็นจากวัสดุเดิม
       material.transparent = baseMat.transparent;
       material.opacity     = baseMat.opacity;
       material.side        = baseMat.side;
@@ -207,7 +212,7 @@
       material.morphNormals= baseMat.morphNormals || false;
       material.toneMapped  = true;
 
-      return { material, uniforms };
+      return material; // คืนวัสดุ (uniforms อยู่ภายในวัสดุนี้)
     }
 
     function autoFit(root, log=false){
@@ -251,7 +256,7 @@
 
       for(let i=0;i<coilUniforms.length && i<temps.length;i++){
         const k = THREE.MathUtils.clamp((temps[i]-MIN_T)/(MAX_T-MIN_T),0,1);
-        coilUniforms[i].uHeat.value = k;
+        coilUniforms[i].uHeat.value = k;          // แยกต่อคอยล์
         coilUniforms[i].uMix.value  = heatOn;
         console.log(`[HEAT] coil${i+1}: T=${temps[i].toFixed(1)}°C  k=${k.toFixed(3)}  on=${heatOn}`);
       }
@@ -261,7 +266,7 @@
       requestAnimationFrame(animate);
       controls.update();
 
-      // center/radius แยกต่อคอยล์ (คำนวณจาก bounding box world space)
+      // อัปเดต center/radius ต่อคอยล์ (คำนวณจาก bounding box world space)
       for(let i=0;i<coilMeshes.length && i<coilUniforms.length;i++){
         const mesh = coilMeshes[i];
         const uni  = coilUniforms[i];
