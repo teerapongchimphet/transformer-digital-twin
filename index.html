@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Transformer — Manual Coils (Radial Heat • ShaderLib)</title>
+  <title>Transformer — Manual Coils (Radial Heat • Final Mix)</title>
 
   <script type="importmap">
   {"imports":{
@@ -105,13 +105,13 @@
         modelRoot.scale.set(0.01,0.01,0.01);
         scene.add(modelRoot);
 
-        const keys=['wicklung']; // เจอ Wicklung, Wicklung2, Wicklung3
+        // เจอ Wicklung ทั้ง 3 (ชื่อมีคำว่า 'wicklung')
+        const keys=['wicklung'];
         modelRoot.traverse(o=>{
           if(o.isMesh){
             const n=(o.name||'').toLowerCase();
             if(keys.some(k=>n.includes(k))){
               console.log('COIL FOUND:', o.name);
-              // สร้าง ShaderMaterial จาก ShaderLib.standard
               const mat = makeRadialStandardMaterial(o.material);
               o.material = mat.material;
               coilMeshes.push(o);
@@ -126,26 +126,26 @@
       }, undefined, err=>console.error('Load GLB error:', err));
     }
 
-    // === เปลี่ยน MeshStandardMaterial → ShaderMaterial ที่รวมไฟ/เงามาตรฐาน และเพิ่ม radial heat ===
+    // === เปลี่ยน MeshStandardMaterial → ShaderMaterial ที่รวมไฟ/เงามาตรฐาน + radial heat ===
     function makeRadialStandardMaterial(baseMat){
       const std = THREE.ShaderLib.standard;
       const uniforms = THREE.UniformsUtils.clone(std.uniforms);
 
-      // sync ค่าจาก base material หลัก ๆ
+      // sync ค่าหลักจากเมทิเรียลเดิม
       uniforms.roughness.value = ('roughness' in baseMat)? baseMat.roughness : 0.6;
       uniforms.metalness.value = ('metalness' in baseMat)? baseMat.metalness : 0.0;
-      uniforms.diffuse.value   = baseMat.color.clone();
-      if (baseMat.map)      { uniforms.map.value = baseMat.map; }
-      if (baseMat.envMap)   { uniforms.envMap.value = baseMat.envMap; }
-      if (baseMat.emissive) { uniforms.emissive.value = baseMat.emissive; }
+      uniforms.diffuse.value   = baseMat.color ? baseMat.color.clone() : new THREE.Color(0x46ff46);
+      if (baseMat.map)    uniforms.map.value = baseMat.map;
+      if (baseMat.envMap) uniforms.envMap.value = baseMat.envMap;
+      if (baseMat.emissive) uniforms.emissive.value = baseMat.emissive;
 
-      // --- เพิ่ม uniforms เราเอง ---
+      // เพิ่ม uniforms เราเอง
       uniforms.uCenter = { value: new THREE.Vector3() };
-      uniforms.uRadius = { value: 0.5 };   // จะอัปเดตทีหลังตาม bounds
-      uniforms.uHeat   = { value: 0.0 };   // 0..1 จากสไลเดอร์
+      uniforms.uRadius = { value: 0.5 };
+      uniforms.uHeat   = { value: 0.0 }; // 0..1 จากสไลเดอร์
 
-      // สร้าง shader
-      let vertexShader =
+      // vertex: เก็บ world position
+      const vertexShader =
         'varying vec3 vWorldPos;\n' +
         std.vertexShader.replace(
           '#include <project_vertex>',
@@ -156,7 +156,8 @@
           `
         );
 
-      let fragmentShader =
+      // fragment: global tint + center boost (เห็นต่างชัด)
+      const fragmentShader =
         'varying vec3 vWorldPos;\n' +
         'uniform vec3 uCenter; uniform float uRadius; uniform float uHeat;\n' +
         std.fragmentShader.replace(
@@ -164,17 +165,20 @@
           `
           {
             float r = length( vWorldPos.xz - uCenter.xz );
-            float falloff = 1.0 - smoothstep(0.0, uRadius, r); // 1 กลาง → 0 ขอบ
+            float falloff = 1.0 - smoothstep(0.0, uRadius, r);
 
-            // เขียว → เหลือง ตาม uHeat
             vec3 cold = vec3(0.0,1.0,0.0);
             vec3 hot  = vec3(1.0,1.0,0.0);
             vec3 baseColor = mix(cold, hot, clamp(uHeat, 0.0, 1.0));
 
-            // ผสมกับแสงเดิม + boost ตรงกลาง
+            // ❶ Global tint ตามอุณหภูมิทั้งแท่ง
+            float globalMix = 0.25 + 0.75 * clamp(uHeat, 0.0, 1.0);
             vec3 lit = outgoingLight;
-            lit = mix(lit, baseColor, falloff);
-            lit += baseColor * (falloff * 0.5);
+            lit = mix(lit, baseColor, globalMix);
+
+            // ❷ Center boost ให้กลางสว่างกว่า
+            float centerBoost = falloff * clamp(uHeat, 0.0, 1.0);
+            lit += baseColor * (0.45 * centerBoost);
 
             gl_FragColor = vec4(lit, diffuseColor.a);
           }
@@ -182,15 +186,12 @@
         );
 
       const material = new THREE.ShaderMaterial({
-        uniforms,
-        vertexShader,
-        fragmentShader,
-        lights: true,
-        fog: true,
-        defines: { STANDARD: '' } // จำเป็นสำหรับ chunk ของ standard
+        uniforms, vertexShader, fragmentShader,
+        lights: true, fog: true,
+        defines: { STANDARD: '' }
       });
 
-      // พร็อพสำคัญจาก baseMat
+      // ค่าพื้นฐานจาก baseMat
       material.transparent = baseMat.transparent;
       material.opacity     = baseMat.opacity;
       material.side        = baseMat.side;
@@ -198,12 +199,9 @@
       material.morphTargets= baseMat.morphTargets || false;
       material.morphNormals= baseMat.morphNormals || false;
 
-      // ตั้งค่าเริ่มต้น (สีพื้นเขียวอ่อนเล็กน้อย)
+      // สีพื้นเริ่มต้น (เขียวอ่อน)
       uniforms.diffuse.value.set(0x46ff46);
 
-      // คำนวณรัศมีจาก bounds ของเมช
-      // (ทำตอนถูกผูกกับเมชแล้ว)
-      // คืนออบเจกต์ไว้ให้เราเติม radius/center ภายหลัง
       return { material, uniforms };
     }
 
@@ -251,7 +249,7 @@
       requestAnimationFrame(animate);
       controls.update();
 
-      // อัปเดต uCenter และ uRadius ของแต่ละขด จาก world-bounds ทุกเฟรม (กันคลาด)
+      // อัปเดต center/radius ของแต่ละคอยล์ทุกเฟรม
       for(let i=0;i<coilMeshes.length && i<coilUniforms.length;i++){
         const mesh = coilMeshes[i];
         mesh.getWorldPosition(tmpV3);
