@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Transformer — Manual Coils (Radial Heat • Texture Overlay)</title>
+  <title>Transformer — Manual Coils (Radial Heat • Overlay)</title>
 
   <script type="importmap">
   {"imports":{
@@ -35,8 +35,8 @@
     </div>
     <div class="row">
       <label>Coil 1</label>
-      <input id="c1" type="range" min="25" max="60" step="0.1" value="35">
-      <span id="t1" class="chip">35.0°C</span>
+      <input id="c1" type="range" min="25" max="60" step="0.1" value="25">
+      <span id="t1" class="chip">25.0°C</span>
     </div>
     <div class="row">
       <label>Coil 2</label>
@@ -45,8 +45,8 @@
     </div>
     <div class="row">
       <label>Coil 3</label>
-      <input id="c3" type="range" min="25" max="60" step="0.1" value="55">
-      <span id="t3" class="chip">55.0°C</span>
+      <input id="c3" type="range" min="25" max="60" step="0.1" value="60">
+      <span id="t3" class="chip">60.0°C</span>
     </div>
     <small class="mute">Tip: drag to orbit, wheel to zoom</small>
   </div>
@@ -59,8 +59,7 @@
     let scene, camera, renderer, controls, modelRoot=null;
     const coilMeshes=[], coilUniforms=[];
     const MIN_T=25, MAX_T=60;
-    const tmpV3 = new THREE.Vector3();
-    const tmpBox = new THREE.Box3();
+    const tmpV3 = new THREE.Vector3(), tmpBox = new THREE.Box3();
 
     init(); loadModel(); animate();
 
@@ -121,38 +120,42 @@
           }
         });
 
-        if(coilMeshes.length===0) console.warn('ไม่พบคอยล์ (ใช้ Log Meshes ดูชื่อ mesh)');
+        if(coilMeshes.length===0) console.warn('ไม่พบคอยล์ (กด Log Meshes เพื่อเช็คชื่อ mesh)');
         autoFit(modelRoot,true);
         applyTemps();
       }, undefined, err=>console.error('Load GLB error:', err));
     }
 
-    // ——— สร้าง ShaderMaterial ที่คงแสง/เงามาตรฐาน + ซ้อน heat ทับ texture ———
+    // === เปลี่ยนเป็น ShaderMaterial ที่ "ซ้อนสีความร้อน" ทับผลแสงเดิม + รองรับ texture เดิม ===
     function makeRadialStandardMaterial(baseMat){
       const usePhysical = baseMat && /Physical/i.test(baseMat.type||'');
       const core = THREE.ShaderLib[ usePhysical ? 'physical' : 'standard' ];
       const uniforms = THREE.UniformsUtils.clone(core.uniforms);
 
-      // sync พารามิเตอร์จากวัสดุเดิม
+      // sync พารามิเตอร์หลักจากวัสดุเดิม
       if ('roughness' in baseMat) uniforms.roughness.value = baseMat.roughness;
       if ('metalness' in baseMat) uniforms.metalness.value = baseMat.metalness;
       if (baseMat.color) uniforms.diffuse.value = baseMat.color.clone();
       if (baseMat.envMap) uniforms.envMap.value = baseMat.envMap;
       if (baseMat.emissive) uniforms.emissive.value = baseMat.emissive;
 
-      // map (สำคัญ: ต้องเปิด define USE_MAP ด้วย)
+      // รองรับแผนที่พื้นผิวเดิม (texture)
       const defines = usePhysical ? { PHYSICAL: '' } : { STANDARD: '' };
-      if (baseMat.map) {
+      if (baseMat.map){
         uniforms.map.value = baseMat.map;
-        defines.USE_MAP = ''; // เปิด sampling ของ texture
+        defines.USE_MAP = '';           // สำคัญ: เปิดทางใน shader ให้ใช้ map
+      }
+      if (baseMat.normalMap){
+        uniforms.normalMap = { value: baseMat.normalMap };
+        defines.USE_NORMALMAP = '';
       }
 
-      // uniforms ความร้อน
+      // เพิ่ม uniforms ความร้อน
       uniforms.uCenter = { value: new THREE.Vector3() };
       uniforms.uRadius = { value: 0.5 };
-      uniforms.uHeat   = { value: 0.0 };
+      uniforms.uHeat   = { value: 0.0 }; // 0..1
 
-      // vertex: เก็บ world position
+      // vertex: world position
       const vertexShader =
         'varying vec3 vWorldPos;\n' +
         core.vertexShader.replace(
@@ -164,7 +167,7 @@
           `
         );
 
-      // fragment: ซ้อน heat ทับผลลัพธ์แสงเงา + center boost
+      // fragment: overlay heat (เก็บ texture/lighting เดิมไว้)
       const fragmentShader =
         'varying vec3 vWorldPos;\n' +
         'uniform vec3 uCenter; uniform float uRadius; uniform float uHeat;\n' +
@@ -176,23 +179,23 @@
             float r = length( vWorldPos.xz - uCenter.xz );
             float falloff = 1.0 - smoothstep(0.0, uRadius, r);
 
-            // สีเขียว -> เหลือง ตามอุณหภูมิ (0..1)
+            // เขียว -> เหลือง ตามอุณหภูมิ
             vec3 cold = vec3(0.0,1.0,0.0);
             vec3 hot  = vec3(1.0,1.0,0.0);
-            float k = clamp(uHeat, 0.0, 1.0);
-            vec3 heatColor = mix(cold, hot, k);
+            vec3 heatColor = mix(cold, hot, clamp(uHeat, 0.0, 1.0));
 
-            // ผลแสงเงาเดิมของ standard/physical อยู่ใน outgoingLight (รวม albedo แล้ว)
-            vec3 shaded = outgoingLight;
+            // สัดส่วน overlay ทั่วทั้งคอยล์ + เน้นกลาง
+            float globalMix = 0.25 + 0.75 * clamp(uHeat, 0.0, 1.0);
+            float centerBoost = falloff * clamp(uHeat, 0.0, 1.0);
 
-            // Global tint แบบคูณ: รักษา texture เดิม
-            float globalMix = 0.25 + 0.75 * k;           // ปริมาณทับสีโดยรวม
-            vec3 tintMul = mix(vec3(1.0), heatColor, globalMix);
-            vec3 lit = shaded * tintMul;
+            // ผลแสงรวมเดิม (รวม texture/material)
+            vec3 lit = outgoingLight;
 
-            // Center boost: เร่งความสว่างบริเวณกลางคอยล์
-            float centerBoost = 0.45 * falloff * k;
-            lit += heatColor * centerBoost;
+            // ซ้อนสีความร้อนทับผลแสง (overlay-like)
+            lit = mix(lit, heatColor, globalMix);
+
+            // เติมประกายบริเวณกลาง (คล้าย emissive เล็กน้อย)
+            lit += heatColor * (0.45 * centerBoost);
 
             gl_FragColor = vec4(lit, diffuseColor.a);
           }
@@ -204,7 +207,7 @@
         lights: true, fog: true, defines
       });
 
-      // ค่าพื้นฐานจากวัสดุเดิม
+      // สืบทอดค่าสำคัญจากวัสดุเดิม
       material.transparent = baseMat.transparent;
       material.opacity     = baseMat.opacity;
       material.side        = baseMat.side;
@@ -212,7 +215,7 @@
       material.morphTargets= baseMat.morphTargets || false;
       material.morphNormals= baseMat.morphNormals || false;
 
-      // ให้สี heat ไม่โดน tone mapping กดทับ
+      // ทำให้สี heat ไม่ถูก tone mapping กด
       material.toneMapped = false;
 
       return { material, uniforms };
@@ -262,7 +265,7 @@
       requestAnimationFrame(animate);
       controls.update();
 
-      // อัปเดต center/radius จาก bounding box ของแต่ละคอยล์ (world space)
+      // คำนวน center/radius จาก bounding box (world space) ทุกเฟรม
       for(let i=0;i<coilMeshes.length && i<coilUniforms.length;i++){
         const mesh = coilMeshes[i];
         const uni  = coilUniforms[i];
