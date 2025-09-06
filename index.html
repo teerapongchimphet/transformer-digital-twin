@@ -113,21 +113,21 @@
         modelRoot.scale.set(0.01,0.01,0.01);
         scene.add(modelRoot);
 
-        // เลือกคอยล์ (ชื่อมีคำว่า Wicklung)
-        const keys = ['wicklung'];
-        modelRoot.traverse(o=>{
-          if (o.isMesh) {
-            const n = (o.name||'').toLowerCase();
-            if (keys.some(k=>n.includes(k))) {
-              o.material = o.material.clone();
-              // base ให้เป็นเขียวอ่อนเพื่อให้เห็นเสมอ
-              o.material.color?.set?.(0x46ff46);
-              const uniforms = upgradeToRadialHeat(o);
-              coilMeshes.push(o);
-              coilUniforms.push(uniforms);
-            }
-          }
-        });
+        const keys = ['wicklung']; // คำหลักที่ครอบคลุม Wicklung, Wicklung2, Wicklung3
+modelRoot.traverse(o=>{
+  if (o.isMesh) {
+    const n = (o.name||'').toLowerCase();
+    if (keys.some(k=>n.includes(k))) {
+      console.log("COIL FOUND:", o.name); // debug
+      o.material = o.material.clone();
+      o.material.color?.set?.(0x46ff46);
+      const uniforms = upgradeToRadialHeat(o);
+      coilMeshes.push(o);
+      coilUniforms.push(uniforms);
+    }
+  }
+});
+
 
         if (coilMeshes.length === 0) console.warn('ไม่พบคอยล์ (ชื่อ Wicklung*)');
         autoFit(modelRoot,true);
@@ -257,3 +257,4 @@
   </script>
 </body>
 </html>
+
