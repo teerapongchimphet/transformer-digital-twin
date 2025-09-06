@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>Transformer — Manual Coil Temperatures</title>
+  <title>Transformer — Manual Coil Temperatures (Elliptical Hotspot)</title>
 
   <!-- Import Map -->
   <script type="importmap">
@@ -16,7 +16,7 @@
   <style>
     :root{--hud-bg:rgba(0,0,0,.55)}
     html,body{margin:0;height:100%;background:#0f1115;color:#eee;font-family:system-ui,Segoe UI,Roboto,Arial}
-    #hud{position:fixed;left:12px;top:12px;background:var(--hud-bg);padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.25);z-index:10;min-width:280px}
+    #hud{position:fixed;left:12px;top:12px;background:var(--hud-bg);padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.25);z-index:10;min-width:290px}
     #hud h1{margin:0 0 6px 0;font-size:16px}
     .row{display:flex;gap:8px;align-items:center;margin:6px 0}
     .row label{width:64px;opacity:.9}
@@ -49,7 +49,7 @@
       <input id="c3" type="range" min="25" max="60" step="0.1" value="55">
       <span id="t3" class="chip">55.0°C</span>
     </div>
-    <small class="mute">Tip: drag to orbit, wheel to zoom</small>
+    <small class="mute">Tip: drag = orbit, wheel = zoom</small>
   </div>
 
   <script type="module">
@@ -60,6 +60,7 @@
     // --- THREE setup ---
     let scene, camera, renderer, controls, modelRoot = null;
     const coilMeshes = []; // จะเก็บ 3 mesh: Wicklung*
+    const coilShaders = []; // เก็บตัวชี้ uniforms ต่อคอยล์
 
     init();
     loadModel();
@@ -86,7 +87,7 @@
       dir.position.set(6,8,4); scene.add(dir);
 
       const grid = new THREE.GridHelper(20,20,0x444444,0x222222);
-      grid.position.y = 0; scene.add(grid);
+      scene.add(grid);
       scene.add(new THREE.AxesHelper(1));
 
       window.addEventListener('resize', ()=>{
@@ -98,10 +99,7 @@
       document.getElementById('logBtn').onclick = ()=> logAllMeshes();
 
       // bind sliders
-      ['c1','c2','c3'].forEach((id,i)=>{
-        const el = document.getElementById(id);
-        el.addEventListener('input', ()=> applyTemps());
-      });
+      ['c1','c2','c3'].forEach((id)=> document.getElementById(id).addEventListener('input', applyTemps));
     }
 
     function loadModel(){
@@ -118,16 +116,23 @@
             const n = (o.name||'').toLowerCase();
             if (keys.some(k=>n.includes(k))) {
               o.material = o.material.clone();
+              // ปิด toneMappingExposure กระทบ emissive มากเกินไป
               if ('emissive' in o.material){ o.material.emissive.set(0x000000); o.material.emissiveIntensity = 0.0; }
               coilMeshes.push(o);
             }
           }
         });
 
-        // ให้แน่ใจว่ามีแค่ 3 ชิ้น ถ้ามากกว่านั้นจะใช้แค่สามชิ้นแรก
         if (coilMeshes.length < 1) console.warn('ไม่พบ mesh ที่เป็นคอยล์ (ชื่อ Wicklung*)');
+
+        // จัดตำแหน่งและกล้อง
         autoFit(modelRoot,true);
-        applyTemps(); // ลงสีตามค่าเริ่มต้นของสไลเดอร์
+
+        // เตรียม shader ฮอตสปอตต่อคอยล์
+        coilMeshes.forEach((mesh, idx)=> prepareHotspotShader(mesh, idx));
+
+        // ลงสีตามค่าเริ่มต้นของสไลเดอร์
+        applyTemps();
       }, undefined, (err)=> console.error('Load GLB error:', err));
     }
 
@@ -158,6 +163,95 @@
       console.log('[MESH]', names);
     }
 
+    // --- Hotspot shader per-coil ---
+    function prepareHotspotShader(mesh, index){
+      // หา center และรัศมีวงรีใน world จากขนาดกล่องล้อม (ใช้แนวราบ x,z)
+      const box = new THREE.Box3().setFromObject(mesh);
+      const centerWorld = box.getCenter(new THREE.Vector3());
+      const size = box.getSize(new THREE.Vector3());
+      const rx = Math.max(size.x*0.35, 0.001); // รัศมีแกน x ของวงรี
+      const rz = Math.max(size.z*0.35, 0.001); // รัศมีแกน z ของวงรี
+
+      // เก็บ uniforms ไว้ปรับภายหลัง
+      const uniformsRef = {
+        uCenter: { value: centerWorld.clone() },
+        uRadii:  { value: new THREE.Vector2(rx, rz) },
+        uCold:   { value: new THREE.Color(0x00ff00) }, // เขียว
+        uHot:    { value: new THREE.Color(0xffff00) }, // เหลือง
+        uT:      { value: 0.25 },                      // 0..1 จากอุณหภูมิ
+        uEmi:    { value: 0.2 }                        // ความเรืองแสงพื้นฐาน
+      };
+
+      // patch shader
+      mesh.material.onBeforeCompile = (shader)=>{
+        // ผสาน uniforms
+        Object.assign(shader.uniforms, uniformsRef);
+
+        // ส่งผ่านตำแหน่งใน world
+        shader.vertexShader = shader.vertexShader.replace(
+          '#include <common>',
+          `
+          #include <common>
+          varying vec3 vWorldPos;
+          `
+        ).replace(
+          '#include <begin_vertex>',
+          `
+          #include <begin_vertex>
+          vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          `
+        );
+
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          `
+          #include <common>
+          varying vec3 vWorldPos;
+          uniform vec3 uCenter;
+          uniform vec2 uRadii;
+          uniform vec3 uCold;
+          uniform vec3 uHot;
+          uniform float uT;
+          uniform float uEmi;
+          `
+        ).replace(
+          'vec4 diffuseColor = vec4( diffuse, opacity );',
+          `
+          // base
+          vec4 diffuseColor = vec4( diffuse, opacity );
+
+          // ระยะเชิงวงรีในระนาบ xz (world)
+          vec2 d = vec2( (vWorldPos.x - uCenter.x)/uRadii.x,
+                         (vWorldPos.z - uCenter.z)/uRadii.y );
+          float r = length(d);                 // r=0 กลางฮอตสปอต
+          // โปรไฟล์กระจายตัวแบบ Gaussian
+          float hotspot = exp(-4.0*r*r);       // แกนคมที่กลาง ค่อย ๆ จางออก
+          // สัดส่วนสีรวม: อุณหภูมิพื้นฐาน + บูสต์จากฮอตสปอต
+          float k = clamp(uT*0.85 + hotspot*0.9, 0.0, 1.0);
+          vec3 heat = mix(uCold, uHot, k);
+
+          diffuseColor.rgb = heat;
+          `
+        ).replace(
+          '#include <emissivemap_fragment>',
+          `
+          #include <emissivemap_fragment>
+          // เพิ่มความเรืองแสงตามฮอตสปอตเพื่อให้ดู "ร้อน"
+          vec2 dE = vec2( (vWorldPos.x - uCenter.x)/uRadii.x,
+                          (vWorldPos.z - uCenter.z)/uRadii.y );
+          float rE = length(dE);
+          float hotspotE = exp(-4.0*rE*rE);
+          totalEmissiveRadiance += mix(uCold, uHot, clamp(uT,0.0,1.0)) * (uEmi + hotspotE*1.2);
+          `
+        );
+        // เก็บอ้างอิงไว้ปรับแบบ real-time
+        coilShaders[index] = { shader, uniforms: uniformsRef };
+      };
+
+      // บังคับคอมไพล์หนึ่งเฟรม
+      mesh.material.needsUpdate = true;
+    }
+
     // --- Manual temperatures ---
     const MIN_T = 25, MAX_T = 60;
 
@@ -171,24 +265,38 @@
 
       const temps = [t1,t2,t3];
       for (let i=0;i<coilMeshes.length && i<temps.length;i++){
-        paintCoil(coilMeshes[i], temps[i]);
+        paintCoil(i, temps[i]);
       }
     }
 
-    // สี เขียว → เหลือง (ตามสเกล 25–60°C) + emissive boost
-    function paintCoil(mesh, t){
-      const GREEN  = new THREE.Color(0x00ff00);
-      const YELLOW = new THREE.Color(0xffff00);
+    // แปลงอุณหภูมิเป็น 0..1 แล้วส่งเข้า uniforms (สีพื้นฐานยังคงเขียว→เหลือง)
+    function paintCoil(idx, t){
       const k = THREE.MathUtils.clamp((t - MIN_T) / (MAX_T - MIN_T), 0, 1);
-      const hex = GREEN.clone().lerp(YELLOW, k).getHex();
+      const entry = coilShaders[idx];
+      const mesh  = coilMeshes[idx];
+      if (!mesh) return;
+
       try{
+        // อัปเดตสี base (กันกรณี shader ยังไม่คอมไพล์)
+        const GREEN  = new THREE.Color(0x00ff00);
+        const YELLOW = new THREE.Color(0xffff00);
+        const hex = GREEN.clone().lerp(YELLOW, k).getHex();
         mesh.material.color?.setHex?.(hex);
         if ('emissive' in mesh.material){
           mesh.material.emissive.setHex(hex);
-          if ('emissiveIntensity' in mesh.material) mesh.material.emissiveIntensity = 0.15 + 0.85*k;
+          mesh.material.emissiveIntensity = 0.2 + 0.8*k;
+        }
+
+        // อัปเดต uniforms ของ shader ฮอตสปอต
+        if (entry?.uniforms){
+          entry.uniforms.uT.value = k;
+          // สามารถปรับความเข้มเรืองแสงฐาน ถ้าต้องการ
+          entry.uniforms.uEmi.value = 0.15 + 0.6*k;
         }
         mesh.material.needsUpdate = true;
-      }catch(e){ console.warn('update material failed on', mesh.name, e); }
+      }catch(e){
+        console.warn('update material failed on', mesh?.name, e);
+      }
     }
 
     // --- render ---
