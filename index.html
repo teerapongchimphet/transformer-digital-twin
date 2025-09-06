@@ -1,1 +1,202 @@
-<!DOCTYPE html> <html lang="th"> <head> <meta charset="utf-8" /> <meta name="viewport" content="width=device-width,initial-scale=1.0"/> <title>Transformer — Manual Coil Temperatures</title> <!-- Import Map --> <script type="importmap"> {"imports":{ "three":"https://unpkg.com/three@0.155.0/build/three.module.js", "three/addons/":"https://unpkg.com/three@0.155.0/examples/jsm/" }} </script> <style> :root{--hud-bg:rgba(0,0,0,.55)} html,body{margin:0;height:100%;background:#0f1115;color:#eee;font-family:system-ui,Segoe UI,Roboto,Arial} #hud{position:fixed;left:12px;top:12px;background:var(--hud-bg);padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.25);z-index:10;min-width:280px} #hud h1{margin:0 0 6px 0;font-size:16px} .row{display:flex;gap:8px;align-items:center;margin:6px 0} .row label{width:64px;opacity:.9} .row input[type=range]{flex:1} .chip{display:inline-block;min-width:54px;padding:2px 8px;border-radius:999px;background:#1f2430;border:1px solid #333;text-align:center;font-variant-numeric:tabular-nums} .btn{background:#1f2430;border:1px solid #333;color:#eee;padding:4px 8px;border-radius:8px;cursor:pointer;margin-right:6px} small.mute{opacity:.75} canvas{display:block} </style> </head> <body> <div id="hud"> <h1>Transformer (Manual Coils)</h1> <div class="row"> <button id="fitBtn" class="btn">Auto-fit</button> <button id="logBtn" class="btn">Log Meshes</button> </div> <div class="row"> <label>Coil 1</label> <input id="c1" type="range" min="25" max="60" step="0.1" value="35"> <span id="t1" class="chip">35.0°C</span> </div> <div class="row"> <label>Coil 2</label> <input id="c2" type="range" min="25" max="60" step="0.1" value="45"> <span id="t2" class="chip">45.0°C</span> </div> <div class="row"> <label>Coil 3</label> <input id="c3" type="range" min="25" max="60" step="0.1" value="55"> <span id="t3" class="chip">55.0°C</span> </div> <small class="mute">Tip: drag to orbit, wheel to zoom</small> </div> <script type="module"> import * as THREE from 'three'; import { OrbitControls } from 'three/addons/controls/OrbitControls.js'; import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'; // --- THREE setup --- let scene, camera, renderer, controls, modelRoot = null; const coilMeshes = []; // จะเก็บ 3 mesh: Wicklung* init(); loadModel(); animate(); function init(){ scene = new THREE.Scene(); scene.background = new THREE.Color(0x0f1115); camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 2000); camera.position.set(6,4,8); renderer = new THREE.WebGLRenderer({antialias:true}); renderer.setPixelRatio(devicePixelRatio); renderer.setSize(innerWidth, innerHeight); renderer.outputColorSpace = THREE.SRGBColorSpace; document.body.appendChild(renderer.domElement); controls = new OrbitControls(camera, renderer.domElement); controls.enableDamping = true; scene.add(new THREE.HemisphereLight(0xffffff, 0x222233, 0.9)); const dir = new THREE.DirectionalLight(0xffffff, 1.0); dir.position.set(6,8,4); scene.add(dir); const grid = new THREE.GridHelper(20,20,0x444444,0x222222); grid.position.y = 0; scene.add(grid); scene.add(new THREE.AxesHelper(1)); window.addEventListener('resize', ()=>{ camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); }); document.getElementById('fitBtn').onclick = ()=> modelRoot && autoFit(modelRoot,true); document.getElementById('logBtn').onclick = ()=> logAllMeshes(); // bind sliders ['c1','c2','c3'].forEach((id,i)=>{ const el = document.getElementById(id); el.addEventListener('input', ()=> applyTemps()); }); } function loadModel(){ const loader = new GLTFLoader(); loader.load('Transformer1.glb', (gltf)=>{ modelRoot = gltf.scene; modelRoot.scale.set(0.01,0.01,0.01); scene.add(modelRoot); // เลือกคอยล์ด้วยชื่อที่มีคำว่า "Wicklung" const keys = ['wicklung']; modelRoot.traverse(o=>{ if (o.isMesh) { const n = (o.name||'').toLowerCase(); if (keys.some(k=>n.includes(k))) { o.material = o.material.clone(); if ('emissive' in o.material){ o.material.emissive.set(0x000000); o.material.emissiveIntensity = 0.0; } coilMeshes.push(o); } } }); // ให้แน่ใจว่ามีแค่ 3 ชิ้น ถ้ามากกว่านั้นจะใช้แค่สามชิ้นแรก if (coilMeshes.length < 1) console.warn('ไม่พบ mesh ที่เป็นคอยล์ (ชื่อ Wicklung*)'); autoFit(modelRoot,true); applyTemps(); // ลงสีตามค่าเริ่มต้นของสไลเดอร์ }, undefined, (err)=> console.error('Load GLB error:', err)); } // วางโมเดลบนกริดและจัดกล้อง function autoFit(root, log=false){ const box = new THREE.Box3().setFromObject(root); const center = box.getCenter(new THREE.Vector3()); root.position.sub(center); const box2 = new THREE.Box3().setFromObject(root); const size2 = box2.getSize(new THREE.Vector3()); root.position.y += size2.y/2; // ฐานแตะ y=0 const maxDim = Math.max(size2.x,size2.y,size2.z); const fov = camera.fov * Math.PI/180; const camDist = Math.abs(maxDim / (2*Math.tan(fov/2))) * 1.8; camera.position.set(camDist, camDist*0.6, camDist); camera.near = Math.max(0.001, camDist/100); camera.far = camDist*100; camera.updateProjectionMatrix(); controls.target.set(0, size2.y*0.55, 0); controls.update(); if (log) console.log('[FIT] size:', size2, 'camDist:', camDist.toFixed(2)); } function logAllMeshes(){ if (!modelRoot) return; const names = []; modelRoot.traverse(o=>{ if (o.isMesh) names.push(o.name||'(unnamed)'); }); console.log('[MESH]', names); } // --- Manual temperatures --- const MIN_T = 25, MAX_T = 60; function applyTemps(){ const t1 = parseFloat(document.getElementById('c1').value); const t2 = parseFloat(document.getElementById('c2').value); const t3 = parseFloat(document.getElementById('c3').value); document.getElementById('t1').textContent = t1.toFixed(1)+'°C'; document.getElementById('t2').textContent = t2.toFixed(1)+'°C'; document.getElementById('t3').textContent = t3.toFixed(1)+'°C'; const temps = [t1,t2,t3]; for (let i=0;i<coilMeshes.length && i<temps.length;i++){ paintCoil(coilMeshes[i], temps[i]); } } // สี เขียว → เหลือง (ตามสเกล 25–60°C) + emissive boost function paintCoil(mesh, t){ const GREEN = new THREE.Color(0x00ff00); const YELLOW = new THREE.Color(0xffff00); const k = THREE.MathUtils.clamp((t - MIN_T) / (MAX_T - MIN_T), 0, 1); const hex = GREEN.clone().lerp(YELLOW, k).getHex(); try{ mesh.material.color?.setHex?.(hex); if ('emissive' in mesh.material){ mesh.material.emissive.setHex(hex); if ('emissiveIntensity' in mesh.material) mesh.material.emissiveIntensity = 0.15 + 0.85*k; } mesh.material.needsUpdate = true; }catch(e){ console.warn('update material failed on', mesh.name, e); } } // --- render --- function animate(){ requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); } </script> </body> </html>
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Transformer — Manual Coil Temperatures</title>
+
+  <!-- Import Map -->
+  <script type="importmap">
+  {"imports":{
+    "three":"https://unpkg.com/three@0.155.0/build/three.module.js",
+    "three/addons/":"https://unpkg.com/three@0.155.0/examples/jsm/"
+  }}
+  </script>
+
+  <style>
+    :root{--hud-bg:rgba(0,0,0,.55)}
+    html,body{margin:0;height:100%;background:#0f1115;color:#eee;font-family:system-ui,Segoe UI,Roboto,Arial}
+    #hud{position:fixed;left:12px;top:12px;background:var(--hud-bg);padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.25);z-index:10;min-width:280px}
+    #hud h1{margin:0 0 6px 0;font-size:16px}
+    .row{display:flex;gap:8px;align-items:center;margin:6px 0}
+    .row label{width:64px;opacity:.9}
+    .row input[type=range]{flex:1}
+    .chip{display:inline-block;min-width:54px;padding:2px 8px;border-radius:999px;background:#1f2430;border:1px solid #333;text-align:center;font-variant-numeric:tabular-nums}
+    .btn{background:#1f2430;border:1px solid #333;color:#eee;padding:4px 8px;border-radius:8px;cursor:pointer;margin-right:6px}
+    small.mute{opacity:.75}
+    canvas{display:block}
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <h1>Transformer (Manual Coils)</h1>
+    <div class="row">
+      <button id="fitBtn" class="btn">Auto-fit</button>
+      <button id="logBtn" class="btn">Log Meshes</button>
+    </div>
+    <div class="row">
+      <label>Coil 1</label>
+      <input id="c1" type="range" min="25" max="60" step="0.1" value="35">
+      <span id="t1" class="chip">35.0°C</span>
+    </div>
+    <div class="row">
+      <label>Coil 2</label>
+      <input id="c2" type="range" min="25" max="60" step="0.1" value="45">
+      <span id="t2" class="chip">45.0°C</span>
+    </div>
+    <div class="row">
+      <label>Coil 3</label>
+      <input id="c3" type="range" min="25" max="60" step="0.1" value="55">
+      <span id="t3" class="chip">55.0°C</span>
+    </div>
+    <small class="mute">Tip: drag to orbit, wheel to zoom</small>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+    // --- THREE setup ---
+    let scene, camera, renderer, controls, modelRoot = null;
+    const coilMeshes = []; // จะเก็บ 3 mesh: Wicklung*
+
+    init();
+    loadModel();
+    animate();
+
+    function init(){
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0f1115);
+
+      camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 2000);
+      camera.position.set(6,4,8);
+
+      renderer = new THREE.WebGLRenderer({antialias:true});
+      renderer.setPixelRatio(devicePixelRatio);
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      document.body.appendChild(renderer.domElement);
+
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x222233, 0.9));
+      const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+      dir.position.set(6,8,4); scene.add(dir);
+
+      const grid = new THREE.GridHelper(20,20,0x444444,0x222222);
+      grid.position.y = 0; scene.add(grid);
+      scene.add(new THREE.AxesHelper(1));
+
+      window.addEventListener('resize', ()=>{
+        camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+      });
+
+      document.getElementById('fitBtn').onclick = ()=> modelRoot && autoFit(modelRoot,true);
+      document.getElementById('logBtn').onclick = ()=> logAllMeshes();
+
+      // bind sliders
+      ['c1','c2','c3'].forEach((id,i)=>{
+        const el = document.getElementById(id);
+        el.addEventListener('input', ()=> applyTemps());
+      });
+    }
+
+    function loadModel(){
+      const loader = new GLTFLoader();
+      loader.load('Transformer1.glb', (gltf)=>{
+        modelRoot = gltf.scene;
+        modelRoot.scale.set(0.01,0.01,0.01);
+        scene.add(modelRoot);
+
+        // เลือกคอยล์ด้วยชื่อที่มีคำว่า "Wicklung"
+        const keys = ['wicklung'];
+        modelRoot.traverse(o=>{
+          if (o.isMesh) {
+            const n = (o.name||'').toLowerCase();
+            if (keys.some(k=>n.includes(k))) {
+              o.material = o.material.clone();
+              if ('emissive' in o.material){ o.material.emissive.set(0x000000); o.material.emissiveIntensity = 0.0; }
+              coilMeshes.push(o);
+            }
+          }
+        });
+
+        // ให้แน่ใจว่ามีแค่ 3 ชิ้น ถ้ามากกว่านั้นจะใช้แค่สามชิ้นแรก
+        if (coilMeshes.length < 1) console.warn('ไม่พบ mesh ที่เป็นคอยล์ (ชื่อ Wicklung*)');
+        autoFit(modelRoot,true);
+        applyTemps(); // ลงสีตามค่าเริ่มต้นของสไลเดอร์
+      }, undefined, (err)=> console.error('Load GLB error:', err));
+    }
+
+    // วางโมเดลบนกริดและจัดกล้อง
+    function autoFit(root, log=false){
+      const box = new THREE.Box3().setFromObject(root);
+      const center = box.getCenter(new THREE.Vector3());
+      root.position.sub(center);
+
+      const box2 = new THREE.Box3().setFromObject(root);
+      const size2 = box2.getSize(new THREE.Vector3());
+      root.position.y += size2.y/2; // ฐานแตะ y=0
+
+      const maxDim = Math.max(size2.x,size2.y,size2.z);
+      const fov = camera.fov * Math.PI/180;
+      const camDist = Math.abs(maxDim / (2*Math.tan(fov/2))) * 1.8;
+      camera.position.set(camDist, camDist*0.6, camDist);
+      camera.near = Math.max(0.001, camDist/100); camera.far = camDist*100;
+      camera.updateProjectionMatrix();
+      controls.target.set(0, size2.y*0.55, 0); controls.update();
+      if (log) console.log('[FIT] size:', size2, 'camDist:', camDist.toFixed(2));
+    }
+
+    function logAllMeshes(){
+      if (!modelRoot) return;
+      const names = [];
+      modelRoot.traverse(o=>{ if (o.isMesh) names.push(o.name||'(unnamed)'); });
+      console.log('[MESH]', names);
+    }
+
+    // --- Manual temperatures ---
+    const MIN_T = 25, MAX_T = 60;
+
+    function applyTemps(){
+      const t1 = parseFloat(document.getElementById('c1').value);
+      const t2 = parseFloat(document.getElementById('c2').value);
+      const t3 = parseFloat(document.getElementById('c3').value);
+      document.getElementById('t1').textContent = t1.toFixed(1)+'°C';
+      document.getElementById('t2').textContent = t2.toFixed(1)+'°C';
+      document.getElementById('t3').textContent = t3.toFixed(1)+'°C';
+
+      const temps = [t1,t2,t3];
+      for (let i=0;i<coilMeshes.length && i<temps.length;i++){
+        paintCoil(coilMeshes[i], temps[i]);
+      }
+    }
+
+    // สี เขียว → เหลือง (ตามสเกล 25–60°C) + emissive boost
+    function paintCoil(mesh, t){
+      const GREEN  = new THREE.Color(0x00ff00);
+      const YELLOW = new THREE.Color(0xffff00);
+      const k = THREE.MathUtils.clamp((t - MIN_T) / (MAX_T - MIN_T), 0, 1);
+      const hex = GREEN.clone().lerp(YELLOW, k).getHex();
+      try{
+        mesh.material.color?.setHex?.(hex);
+        if ('emissive' in mesh.material){
+          mesh.material.emissive.setHex(hex);
+          if ('emissiveIntensity' in mesh.material) mesh.material.emissiveIntensity = 0.15 + 0.85*k;
+        }
+        mesh.material.needsUpdate = true;
+      }catch(e){ console.warn('update material failed on', mesh.name, e); }
+    }
+
+    // --- render ---
+    function animate(){
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+  </script>
+</body>
+</html>
