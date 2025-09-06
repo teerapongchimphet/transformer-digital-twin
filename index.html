@@ -60,6 +60,7 @@
     const coilMeshes=[], coilUniforms=[]; // {uCenter,uRadius,uHeat}
     const MIN_T=25, MAX_T=60;
     const tmpV3 = new THREE.Vector3();
+    const tmpBox = new THREE.Box3();
 
     init(); loadModel(); animate();
 
@@ -105,41 +106,43 @@
         modelRoot.scale.set(0.01,0.01,0.01);
         scene.add(modelRoot);
 
-        // เจอ Wicklung ทั้ง 3 (ชื่อมีคำว่า 'wicklung')
-        const keys=['wicklung'];
+        // หา mesh ชื่อที่มี 'wicklung' หรือ 'coil'
+        const keys=['wicklung','coil'];
         modelRoot.traverse(o=>{
           if(o.isMesh){
             const n=(o.name||'').toLowerCase();
             if(keys.some(k=>n.includes(k))){
-              console.log('COIL FOUND:', o.name);
+              console.log('COIL FOUND:', o.name, `(${o.material?.type})`);
               const mat = makeRadialStandardMaterial(o.material);
               o.material = mat.material;
+              o.material.needsUpdate = true;
               coilMeshes.push(o);
               coilUniforms.push(mat.uniforms);
             }
           }
         });
 
-        if(coilMeshes.length===0) console.warn('ไม่พบคอยล์');
+        if(coilMeshes.length===0) console.warn('ไม่พบคอยล์ (ลองตรวจชื่อ mesh ใน Console ด้วยปุ่ม Log Meshes)');
         autoFit(modelRoot,true);
         applyTemps();
       }, undefined, err=>console.error('Load GLB error:', err));
     }
 
-    // === เปลี่ยน MeshStandardMaterial → ShaderMaterial ที่รวมไฟ/เงามาตรฐาน + radial heat ===
+    // === เปลี่ยน Mesh[Standard/Physical]Material → ShaderMaterial ที่รวมไฟ/เงามาตรฐาน + radial heat ===
     function makeRadialStandardMaterial(baseMat){
-      const std = THREE.ShaderLib.standard;
-      const uniforms = THREE.UniformsUtils.clone(std.uniforms);
+      const usePhysical = baseMat && /Physical/i.test(baseMat.type||'');
+      const core = THREE.ShaderLib[ usePhysical ? 'physical' : 'standard' ];
+      const uniforms = THREE.UniformsUtils.clone(core.uniforms);
 
-      // sync ค่าหลักจากเมทิเรียลเดิม
-      uniforms.roughness.value = ('roughness' in baseMat)? baseMat.roughness : 0.6;
-      uniforms.metalness.value = ('metalness' in baseMat)? baseMat.metalness : 0.0;
-      uniforms.diffuse.value   = baseMat.color ? baseMat.color.clone() : new THREE.Color(0x46ff46);
-      if (baseMat.map)    uniforms.map.value = baseMat.map;
+      // sync พารามิเตอร์หลักจากวัสดุเดิม
+      if ('roughness' in baseMat) uniforms.roughness.value = baseMat.roughness;
+      if ('metalness' in baseMat) uniforms.metalness.value = baseMat.metalness;
+      if (baseMat.color) uniforms.diffuse.value = baseMat.color.clone();
+      if (baseMat.map) uniforms.map.value = baseMat.map;
       if (baseMat.envMap) uniforms.envMap.value = baseMat.envMap;
       if (baseMat.emissive) uniforms.emissive.value = baseMat.emissive;
 
-      // เพิ่ม uniforms เราเอง
+      // เพิ่ม uniforms ของเราสำหรับ heat
       uniforms.uCenter = { value: new THREE.Vector3() };
       uniforms.uRadius = { value: 0.5 };
       uniforms.uHeat   = { value: 0.0 }; // 0..1 จากสไลเดอร์
@@ -147,7 +150,7 @@
       // vertex: เก็บ world position
       const vertexShader =
         'varying vec3 vWorldPos;\n' +
-        std.vertexShader.replace(
+        core.vertexShader.replace(
           '#include <project_vertex>',
           `
           vec4 wp = modelMatrix * vec4( transformed, 1.0 );
@@ -156,17 +159,18 @@
           `
         );
 
-      // fragment: global tint + center boost (เห็นต่างชัด)
+      // fragment: global tint + center boost
       const fragmentShader =
         'varying vec3 vWorldPos;\n' +
         'uniform vec3 uCenter; uniform float uRadius; uniform float uHeat;\n' +
-        std.fragmentShader.replace(
+        core.fragmentShader.replace(
           '#include <output_fragment>',
           `
           {
             float r = length( vWorldPos.xz - uCenter.xz );
             float falloff = 1.0 - smoothstep(0.0, uRadius, r);
 
+            // เขียว -> เหลือง ตามอุณหภูมิ
             vec3 cold = vec3(0.0,1.0,0.0);
             vec3 hot  = vec3(1.0,1.0,0.0);
             vec3 baseColor = mix(cold, hot, clamp(uHeat, 0.0, 1.0));
@@ -188,10 +192,10 @@
       const material = new THREE.ShaderMaterial({
         uniforms, vertexShader, fragmentShader,
         lights: true, fog: true,
-        defines: { STANDARD: '' }
+        defines: usePhysical ? { PHYSICAL: '' } : { STANDARD: '' }
       });
 
-      // ค่าพื้นฐานจาก baseMat
+      // สืบทอดค่าสำคัญจากวัสดุเดิม
       material.transparent = baseMat.transparent;
       material.opacity     = baseMat.opacity;
       material.side        = baseMat.side;
@@ -199,8 +203,11 @@
       material.morphTargets= baseMat.morphTargets || false;
       material.morphNormals= baseMat.morphNormals || false;
 
+      // ทำให้สี heat ไม่โดน tone mapping กดทับ
+      material.toneMapped = false;
+
       // สีพื้นเริ่มต้น (เขียวอ่อน)
-      uniforms.diffuse.value.set(0x46ff46);
+      if (uniforms.diffuse) uniforms.diffuse.value.set(0x46ff46);
 
       return { material, uniforms };
     }
@@ -225,7 +232,7 @@
 
     function logAllMeshes(){
       if(!modelRoot) return;
-      const names=[]; modelRoot.traverse(o=>{ if(o.isMesh) names.push(o.name||'(unnamed)'); });
+      const names=[]; modelRoot.traverse(o=>{ if(o.isMesh) names.push(`${o.name||'(unnamed)'} • ${o.material?.type||'-'}`); });
       console.log('[MESH]', names);
     }
 
@@ -249,15 +256,17 @@
       requestAnimationFrame(animate);
       controls.update();
 
-      // อัปเดต center/radius ของแต่ละคอยล์ทุกเฟรม
+      // อัปเดต center/radius ของแต่ละคอยล์ทุกเฟรม (คำนวนจาก bounding box world space)
       for(let i=0;i<coilMeshes.length && i<coilUniforms.length;i++){
         const mesh = coilMeshes[i];
-        mesh.getWorldPosition(tmpV3);
-        coilUniforms[i].uCenter.value.copy(tmpV3);
+        const uni  = coilUniforms[i];
 
-        const box = new THREE.Box3().setFromObject(mesh);
-        const size = box.getSize(new THREE.Vector3());
-        coilUniforms[i].uRadius.value = 0.9 * Math.max(size.x, size.z);
+        tmpBox.setFromObject(mesh);
+        tmpBox.getCenter(tmpV3);           // ศูนย์กลางจริงของคอยล์ (world)
+        uni.uCenter.value.copy(tmpV3);
+
+        const size = tmpBox.getSize(new THREE.Vector3());
+        uni.uRadius.value = 0.45 * Math.max(size.x, size.z); // รัศมีร้อน ~ครึ่งความกว้างคอยล์
       }
 
       renderer.render(scene,camera);
